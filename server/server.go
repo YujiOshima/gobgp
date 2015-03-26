@@ -49,7 +49,7 @@ type serverMsgDataPeer struct {
 }
 
 type peerMapInfo struct {
-	peer                *Peer
+	peer                Sink
 	serverMsgCh         chan *serverMsg
 	peerMsgCh           chan *peerMsg
 	peerMsgData         *serverMsgDataPeer
@@ -64,7 +64,7 @@ type BgpServer struct {
 	RestReqCh      chan *api.RestRequest
 	listenPort     int
 	peerMap        map[string]peerMapInfo
-	globalRib      *Peer
+	globalRib      *GlobalRib
 	policyUpdateCh chan config.RoutingPolicy
 	policyMap      map[string]*policy.Policy
 }
@@ -117,7 +117,7 @@ func (server *BgpServer) Serve() {
 		NeighborAddress: g.RouterId,
 		AfiSafiList:     g.AfiSafiList,
 	}
-	server.globalRib = NewPeer(g, neighConf, globalSch, globalPch, nil, true, make(map[string]*policy.Policy))
+	server.globalRib = NewGlobalRib(g, neighConf, globalSch, globalPch, nil, make(map[string]*policy.Policy))
 
 	listenerMap := make(map[string]*net.TCPListener)
 	acceptCh := make(chan *net.TCPConn)
@@ -180,7 +180,7 @@ func (server *BgpServer) Serve() {
 				}
 				l = []*serverMsgDataPeer{globalRib}
 			}
-			p := NewPeer(server.bgpConfig.Global, peer, sch, pch, l, false, server.policyMap)
+			p := NewPeer(server.bgpConfig.Global, peer, sch, pch, l, server.policyMap)
 			d := &serverMsgDataPeer{
 				address:   peer.NeighborAddress,
 				peerMsgCh: pch,
@@ -212,7 +212,7 @@ func (server *BgpServer) Serve() {
 				delete(server.peerMap, addr)
 				msg := &serverMsg{
 					msgType: SRV_MSG_PEER_DELETED,
-					msgData: info.peer.peerInfo,
+					msgData: info.peer.getpeerInfo(),
 				}
 				if info.isRouteServerClient {
 					sendServerMsgToRSClients(server.peerMap, msg)
@@ -278,7 +278,7 @@ func (server *BgpServer) handleRest(restReq *api.RestRequest) {
 	switch restReq.RequestType {
 	case api.REQ_NEIGHBORS:
 		result := &api.RestResponse{}
-		peerList := make([]*Peer, 0)
+		peerList := make([]Sink, 0)
 		for _, info := range server.peerMap {
 			peerList = append(peerList, info.peer)
 		}
@@ -319,7 +319,7 @@ func (server *BgpServer) handleRest(restReq *api.RestRequest) {
 				msgType: SRV_MSG_API,
 				msgData: restReq,
 			}
-			info.peer.serverMsgCh <- msg
+			info.peer.setserverMsgCh(msg)
 		} else {
 			result.ResponseErr = fmt.Errorf("Neighbor that has %v does not exist.", remoteAddr)
 			restReq.ResponseCh <- result
