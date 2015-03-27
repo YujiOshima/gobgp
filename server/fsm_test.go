@@ -293,7 +293,8 @@ func makePeerAndHandler() (*Peer, *FSMHandler) {
 	globalConfig := config.Global{}
 	neighborConfig := config.Neighbor{}
 
-	p := &Peer{
+	p := &Peer{}
+	sd := &SinkDedault{
 		globalConfig: globalConfig,
 		peerConfig:   neighborConfig,
 		connCh:       make(chan net.Conn),
@@ -302,7 +303,7 @@ func makePeerAndHandler() (*Peer, *FSMHandler) {
 		getActiveCh:  make(chan struct{}),
 		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
 	}
-
+	p.SinkDedault = sd
 	p.siblings = make(map[string]*serverMsgDataPeer)
 	p.fsm = NewFSM(&globalConfig, &neighborConfig, p.connCh)
 

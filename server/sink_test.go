@@ -457,6 +457,364 @@ func TestPeerSelectSmallerHoldtime(t *testing.T) {
 	assert.Equal(float64(0), peer.fsm.negotiatedHoldTime)
 }
 
+func TestPeerAdminShutdownWhileEstablishedRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 10
+
+	peer.t.Go(peer.loop)
+	pushPackets := func() {
+		o, _ := open().Serialize()
+		m.setData(o)
+		k, _ := keepalive().Serialize()
+		m.setData(k)
+	}
+	go pushPackets()
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_ESTABLISHED, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 1000)
+
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+	lastMsg := m.sendBuf[len(m.sendBuf)-1]
+	sent, _ := bgp.ParseBGPMessage(lastMsg)
+	assert.Equal(uint8(bgp.BGP_MSG_NOTIFICATION), sent.Header.Type)
+	assert.Equal(uint8(bgp.BGP_ERROR_CEASE), sent.Body.(*bgp.BGPNotification).ErrorCode)
+	assert.Equal(uint8(bgp.BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN), sent.Body.(*bgp.BGPNotification).ErrorSubcode)
+	assert.True(m.isClosed)
+
+	// check counter
+	counter := peer.fsm.peerConfig.BgpNeighborCommonState
+	assertCounter(assert, counter)
+}
+
+func TestPeerAdminShutdownWhileIdleRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 10
+	peer.fsm.idleHoldTime = 5
+	peer.t.Go(peer.loop)
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 100)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+
+	// check counter
+	counter := peer.fsm.peerConfig.BgpNeighborCommonState
+	assertCounter(assert, counter)
+}
+
+func TestPeerAdminShutdownWhileActiveRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 10
+	peer.t.Go(peer.loop)
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 100)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+
+	// check counter
+	counter := peer.fsm.peerConfig.BgpNeighborCommonState
+	assertCounter(assert, counter)
+}
+
+func TestPeerAdminShutdownWhileOpensentRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 1
+	peer.t.Go(peer.loop)
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_OPENSENT, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 100)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+	lastMsg := m.sendBuf[len(m.sendBuf)-1]
+	sent, _ := bgp.ParseBGPMessage(lastMsg)
+	assert.NotEqual(bgp.BGP_MSG_NOTIFICATION, sent.Header.Type)
+	assert.True(m.isClosed)
+
+	// check counter
+	counter := peer.fsm.peerConfig.BgpNeighborCommonState
+	assertCounter(assert, counter)
+}
+
+func TestPeerAdminShutdownWhileOpenconfirmRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 10
+	peer.t.Go(peer.loop)
+	pushPackets := func() {
+		o, _ := open().Serialize()
+		m.setData(o)
+	}
+	go pushPackets()
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_OPENCONFIRM, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 1000)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+	lastMsg := m.sendBuf[len(m.sendBuf)-1]
+	sent, _ := bgp.ParseBGPMessage(lastMsg)
+	assert.NotEqual(bgp.BGP_MSG_NOTIFICATION, sent.Header.Type)
+	assert.True(m.isClosed)
+
+	// check counter
+	counter := peer.fsm.peerConfig.BgpNeighborCommonState
+	assertCounter(assert, counter)
+
+}
+
+func TestPeerAdminEnableRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+
+	peer.fsm.opensentHoldTime = 5
+	peer.t.Go(peer.loop)
+	pushPackets := func() {
+		o, _ := open().Serialize()
+		m.setData(o)
+		k, _ := keepalive().Serialize()
+		m.setData(k)
+	}
+	go pushPackets()
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_ESTABLISHED, peer, 1000)
+
+	// shutdown peer at first
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_DOWN", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 100)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+
+	// enable peer
+	restReq = api.NewRestRequest(api.REQ_NEIGHBOR_ENABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg = &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+	peer.serverMsgCh <- msg
+	result = <-restReq.ResponseCh
+	res = make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("ADMIN_STATE_UP", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, (HOLDTIME_IDLE+1)*1000)
+	assert.Equal(bgp.BGP_FSM_ACTIVE, peer.fsm.state)
+
+	m2 := NewMockConnection()
+	pushPackets = func() {
+		o, _ := open().Serialize()
+		m2.setData(o)
+		k, _ := keepalive().Serialize()
+		m2.setData(k)
+	}
+	go pushPackets()
+
+	peer.connCh <- m2
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ESTABLISHED, peer, 1000)
+	assert.Equal(bgp.BGP_FSM_ESTABLISHED, peer.fsm.state)
+}
+
+func TestPeerAdminShutdownRejectRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+	m.wait = 500
+
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 100000
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 1
+	peer.t.Go(peer.loop)
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_OPENSENT, peer, 1000)
+
+	restReq := api.NewRestRequest(api.REQ_NEIGHBOR_DISABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg := &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.fsm.adminStateCh <- ADMIN_STATE_DOWN
+
+	peer.serverMsgCh <- msg
+	result := <-restReq.ResponseCh
+	res := make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("previous request is still remaining", res["result"])
+
+	restReq = api.NewRestRequest(api.REQ_NEIGHBOR_ENABLE, "0.0.0.0", bgp.RF_IPv4_UC)
+	msg = &serverMsg{
+		msgType: SRV_MSG_API,
+		msgData: restReq,
+	}
+
+	peer.serverMsgCh <- msg
+	result = <-restReq.ResponseCh
+	res = make(map[string]string)
+	json.Unmarshal(result.Data, &res)
+	assert.Equal("previous request is still remaining", res["result"])
+
+	waitUntilRSC(assert, bgp.BGP_FSM_IDLE, peer, 1000)
+	assert.Equal(bgp.BGP_FSM_IDLE, peer.fsm.state)
+	assert.Equal(ADMIN_STATE_DOWN, peer.fsm.adminState)
+
+}
+
+func TestPeerSelectSmallerHoldtimeRSC(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	assert := assert.New(t)
+	m := NewMockConnection()
+
+	globalConfig := config.Global{}
+	peerConfig := config.Neighbor{}
+	peerConfig.PeerAs = 65001
+	peerConfig.Timers.KeepaliveInterval = 5
+	peer := makeRSC(globalConfig, peerConfig)
+	peer.fsm.opensentHoldTime = 1
+	peerConfig.Timers.HoldTime = 5
+	peer.t.Go(peer.loop)
+
+	pushPackets := func() {
+		opn := bgp.NewBGPOpenMessage(65001, 0, "10.0.0.1", []bgp.OptionParameterInterface{})
+		o, _ := opn.Serialize()
+		m.setData(o)
+	}
+	go pushPackets()
+
+	waitUntilRSC(assert, bgp.BGP_FSM_ACTIVE, peer, 1000)
+	peer.connCh <- m
+	waitUntilRSC(assert, bgp.BGP_FSM_OPENCONFIRM, peer, 1000)
+
+	assert.Equal(float64(0), peer.fsm.negotiatedHoldTime)
+}
+
 func assertCounter(assert *assert.Assertions, counter config.BgpNeighborCommonState) {
 	assert.Equal(uint32(0), counter.OpenIn)
 	assert.Equal(uint32(0), counter.OpenOut)
@@ -494,12 +852,30 @@ func waitUntil(assert *assert.Assertions, state bgp.FSMState, peer *Peer, timeou
 	}
 }
 
+func waitUntilRSC(assert *assert.Assertions, state bgp.FSMState, peer *RouteServerClient, timeout int64) {
+	isTimeout := false
+	expire := func() {
+		isTimeout = true
+	}
+	time.AfterFunc((time.Duration)(timeout)*time.Millisecond, expire)
+
+	for {
+		time.Sleep(1 * time.Millisecond)
+
+		if peer.fsm.state == state || isTimeout {
+			assert.Equal(state, peer.fsm.state, "timeout")
+			break
+		}
+	}
+}
+
 func makePeer(globalConfig config.Global, peerConfig config.Neighbor) *Peer {
 
 	sch := make(chan *serverMsg, 8)
 	pch := make(chan *peerMsg, 4096)
+	p := &Peer{}
 
-	p := &Peer{
+	sd := &SinkDedault{
 		globalConfig: globalConfig,
 		peerConfig:   peerConfig,
 		connCh:       make(chan net.Conn),
@@ -509,6 +885,7 @@ func makePeer(globalConfig config.Global, peerConfig config.Neighbor) *Peer {
 		rfMap:        make(map[bgp.RouteFamily]bool),
 		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
 	}
+	p.SinkDedault = sd
 	p.siblings = make(map[string]*serverMsgDataPeer)
 
 	p.fsm = NewFSM(&globalConfig, &peerConfig, p.connCh)
@@ -531,4 +908,80 @@ func makePeer(globalConfig config.Global, peerConfig config.Neighbor) *Peer {
 	p.t.Go(p.connectLoop)
 
 	return p
+}
+func makeRSC(globalConfig config.Global, peerConfig config.Neighbor) *RouteServerClient {
+	sch := make(chan *serverMsg, 8)
+	pch := make(chan *peerMsg, 4096)
+	rsc := &RouteServerClient{}
+
+	sd := &SinkDedault{
+		globalConfig: globalConfig,
+		peerConfig:   peerConfig,
+		connCh:       make(chan net.Conn),
+		serverMsgCh:  sch,
+		peerMsgCh:    pch,
+		getActiveCh:  make(chan struct{}),
+		rfMap:        make(map[bgp.RouteFamily]bool),
+		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
+	}
+	rsc.SinkDedault = sd
+	rsc.siblings = make(map[string]*serverMsgDataPeer)
+
+	rsc.fsm = NewFSM(&globalConfig, &peerConfig, rsc.connCh)
+	peerConfig.BgpNeighborCommonState.State = uint32(bgp.BGP_FSM_IDLE)
+	peerConfig.BgpNeighborCommonState.Downtime = time.Now().Unix()
+	if peerConfig.NeighborAddress.To4() != nil {
+		rsc.rfMap[bgp.RF_IPv4_UC] = true
+	} else {
+		rsc.rfMap[bgp.RF_IPv6_UC] = true
+	}
+
+	rsc.peerInfo = &table.PeerInfo{
+		AS:      peerConfig.PeerAs,
+		LocalID: globalConfig.RouterId,
+		Address: peerConfig.NeighborAddress,
+	}
+	rfList := []bgp.RouteFamily{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC}
+	rsc.adjRib = table.NewAdjRib(rfList)
+	rsc.rib = table.NewTableManager(rsc.peerConfig.NeighborAddress.String(), rfList)
+	rsc.t.Go(rsc.connectLoop)
+
+	return rsc
+}
+func makeGrib(globalConfig config.Global, peerConfig config.Neighbor) *GlobalRib {
+	sch := make(chan *serverMsg, 8)
+	pch := make(chan *peerMsg, 4096)
+	grib := &GlobalRib{}
+
+	sd := &SinkDedault{
+		globalConfig: globalConfig,
+		peerConfig:   peerConfig,
+		connCh:       make(chan net.Conn),
+		serverMsgCh:  sch,
+		peerMsgCh:    pch,
+		getActiveCh:  make(chan struct{}),
+		rfMap:        make(map[bgp.RouteFamily]bool),
+		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
+	}
+	grib.SinkDedault = sd
+	grib.siblings = make(map[string]*serverMsgDataPeer)
+
+	peerConfig.BgpNeighborCommonState.State = uint32(bgp.BGP_FSM_IDLE)
+	peerConfig.BgpNeighborCommonState.Downtime = time.Now().Unix()
+	if peerConfig.NeighborAddress.To4() != nil {
+		grib.rfMap[bgp.RF_IPv4_UC] = true
+	} else {
+		grib.rfMap[bgp.RF_IPv6_UC] = true
+	}
+
+	grib.peerInfo = &table.PeerInfo{
+		AS:      peerConfig.PeerAs,
+		LocalID: globalConfig.RouterId,
+		Address: peerConfig.NeighborAddress,
+	}
+	rfList := []bgp.RouteFamily{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC}
+	grib.adjRib = table.NewAdjRib(rfList)
+	grib.rib = table.NewTableManager(grib.peerConfig.NeighborAddress.String(), rfList)
+
+	return grib
 }
