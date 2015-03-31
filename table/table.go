@@ -179,7 +179,7 @@ func (td *TableDefault) validatePath(path Path) {
 			}).Error("Invalid path. RouteFamily mismatch")
 		}
 	}
-	_, attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH)
+	_, attr := path.GetPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH)
 	if attr != nil {
 		pathParam := attr.(*bgp.PathAttributeAsPath).Value
 		for _, as := range pathParam {
@@ -194,7 +194,7 @@ func (td *TableDefault) validatePath(path Path) {
 		}
 	}
 
-	_, attr = path.getPathAttr(bgp.BGP_ATTR_TYPE_AS4_PATH)
+	_, attr = path.GetPathAttr(bgp.BGP_ATTR_TYPE_AS4_PATH)
 	if attr != nil {
 		log.WithFields(log.Fields{
 			"Topic": "Table",
