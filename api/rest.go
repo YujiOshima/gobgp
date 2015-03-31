@@ -39,6 +39,7 @@ const (
 	REQ_NEIGHBOR_ENABLE
 	REQ_NEIGHBOR_DISABLE
 	REQ_GLOBAL_RIB
+	REQ_VRF_RIB
 )
 
 const (
@@ -46,11 +47,14 @@ const (
 	GLOBAL       = "/bgp/global"
 	NEIGHBOR     = "/bgp/neighbor"
 	NEIGHBORS    = "/bgp/neighbors"
+	VRF          = "/bgp/vrf"
 
 	PARAM_REMOTE_PEER_ADDR = "remotePeerAddr"
 	PARAM_SHOW_OBJECT      = "showObject"
 	PARAM_OPERATION        = "operation"
 	PARAM_ROUTE_FAMILY     = "routeFamily"
+
+	PARAM_VRF_NAME = "vrfname"
 
 	STATS = "/stats"
 )
@@ -111,22 +115,27 @@ func NewRestServer(port int, bgpServerCh chan *RestRequest) *RestServer {
 //     -- curl -i -X GET http://<ownIP>:8080/v1/bgp/neighbor/<remote address of target neighbor>/adj-rib-out/<rf>
 //   get local-rib of each neighbor.
 //     -- curl -i -X GET http://<ownIP>:8080/v1/bgp/neighbor/<remote address of target neighbor>/local-rib/<rf>
+//   get each VRF-rib
+//     -- curl -i -X GET http://<ownIP>:8080/v1/bgp/vrf/VRF Name/rib
 func (rs *RestServer) Serve() {
 	global := BASE_VERSION + GLOBAL
 	neighbor := BASE_VERSION + NEIGHBOR
 	neighbors := BASE_VERSION + NEIGHBORS
+	vrf := BASE_VERSION + VRF
 
 	r := mux.NewRouter()
 	perPeerURL := "/{" + PARAM_REMOTE_PEER_ADDR + "}"
 	showObjectURL := "/{" + PARAM_SHOW_OBJECT + "}"
 	operationURL := "/{" + PARAM_OPERATION + "}"
 	routeFamilyURL := "/{" + PARAM_ROUTE_FAMILY + "}"
+	vrfNameURL := "/{" + PARAM_VRF_NAME + "}"
 	r.HandleFunc(global+showObjectURL+routeFamilyURL, rs.GlobalGET).Methods("GET")
 	r.HandleFunc(neighbors, rs.NeighborGET).Methods("GET")
 	r.HandleFunc(neighbor+perPeerURL, rs.NeighborGET).Methods("GET")
 	r.HandleFunc(neighbor+perPeerURL+showObjectURL+routeFamilyURL, rs.NeighborGET).Methods("GET")
 	r.HandleFunc(neighbor+perPeerURL+operationURL, rs.NeighborPOST).Methods("POST")
 	r.HandleFunc(neighbor+perPeerURL+operationURL+routeFamilyURL, rs.NeighborPOST).Methods("POST")
+	r.HandleFunc(vrf+vrfNameURL+showObjectURL, rs.VRFGET).Methods("GET")
 
 	// stats
 	r.HandleFunc(STATS, stats_api.Handler).Methods("GET")
@@ -229,7 +238,19 @@ func (rs *RestServer) GlobalGET(w http.ResponseWriter, r *http.Request) {
 			NotFoundHandler(w, r)
 		}
 	}
+}
 
+func (rs *RestServer) VRFGET(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	if showObject, ok := params[PARAM_SHOW_OBJECT]; ok {
+		switch showObject {
+		case "rib":
+			params[PARAM_REMOTE_PEER_ADDR] = params[PARAM_VRF_NAME]
+			rs.neighbor(w, r, REQ_VRF_RIB)
+		default:
+			NotFoundHandler(w, r)
+		}
+	}
 }
 
 func NotFoundHandler(w http.ResponseWriter, r *http.Request) {

@@ -157,27 +157,27 @@ func createUpdateMsgFromPath(path Path, msg *bgp.BGPMessage) *bgp.BGPMessage {
 				u := msg.Body.(*bgp.BGPUpdate)
 				u.NLRI = append(u.NLRI, *nlri)
 			} else {
-				pathAttrs := path.getPathAttrs()
+				pathAttrs := path.GetPathAttrs()
 				return bgp.NewBGPUpdateMessage([]bgp.WithdrawnRoute{}, pathAttrs, []bgp.NLRInfo{*nlri})
 			}
 		}
 	} else if rf == bgp.RF_IPv6_UC || rf == bgp.RF_EVPN {
 		if path.IsWithdraw() {
 			if msg != nil {
-				idx, _ := path.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+				idx, _ := path.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 				u := msg.Body.(*bgp.BGPUpdate)
 				unreach := u.PathAttributes[idx].(*bgp.PathAttributeMpUnreachNLRI)
 				unreach.Value = append(unreach.Value, path.GetNlri())
 			} else {
-				clonedAttrs := cloneAttrSlice(path.getPathAttrs())
-				idx, attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+				clonedAttrs := cloneAttrSlice(path.GetPathAttrs())
+				idx, attr := path.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 				reach := attr.(*bgp.PathAttributeMpReachNLRI)
 				clonedAttrs[idx] = bgp.NewPathAttributeMpUnreachNLRI(reach.Value)
 				return bgp.NewBGPUpdateMessage([]bgp.WithdrawnRoute{}, clonedAttrs, []bgp.NLRInfo{})
 			}
 		} else {
 			if msg != nil {
-				idx, _ := path.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+				idx, _ := path.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 				u := msg.Body.(*bgp.BGPUpdate)
 				reachAttr := u.PathAttributes[idx].(*bgp.PathAttributeMpReachNLRI)
 				u.PathAttributes[idx] = bgp.NewPathAttributeMpReachNLRI(reachAttr.Nexthop.String(),
@@ -186,7 +186,7 @@ func createUpdateMsgFromPath(path Path, msg *bgp.BGPMessage) *bgp.BGPMessage {
 				// we don't need to clone here but we
 				// might merge path to this message in
 				// the future so let's clone anyway.
-				clonedAttrs := cloneAttrSlice(path.getPathAttrs())
+				clonedAttrs := cloneAttrSlice(path.GetPathAttrs())
 				return bgp.NewBGPUpdateMessage([]bgp.WithdrawnRoute{}, clonedAttrs, []bgp.NLRInfo{})
 			}
 		}
@@ -221,7 +221,7 @@ func isMergeable(p1 Path, p2 Path) bool {
 	if p1.GetRouteFamily() != bgp.RF_IPv4_UC {
 		return false
 	}
-	if p1.GetSource() == p2.GetSource() && isSamePathAttrs(p1.getPathAttrs(), p2.getPathAttrs()) {
+	if p1.GetSource() == p2.GetSource() && isSamePathAttrs(p1.GetPathAttrs(), p2.GetPathAttrs()) {
 		return true
 	}
 	return false

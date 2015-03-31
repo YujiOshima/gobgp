@@ -324,8 +324,8 @@ func (adj *AdjRib) update(rib map[bgp.RouteFamily]map[string]*ReceivedRoute, pat
 				delete(rib[rf], key)
 			}
 		} else {
-			if found && reflect.DeepEqual(old.path.getPathAttrs(), path.getPathAttrs()) {
-				path.setTimestamp(old.path.getTimestamp())
+			if found && reflect.DeepEqual(old.path.GetPathAttrs(), path.GetPathAttrs()) {
+				path.setTimestamp(old.path.GetTimestamp())
 			}
 			rib[rf][key] = NewReceivedRoute(path, false)
 		}

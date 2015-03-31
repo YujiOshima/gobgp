@@ -160,6 +160,7 @@ func main() {
 				bgpConfig = &newConfig.Bgp
 				added = newConfig.Bgp.NeighborList
 				deleted = []config.Neighbor{}
+				bgpServer.VrfAdd(server.VrfConfig{"EVPNA", bgp.BGP_RD_TWO_OCTET_AS, "64512:79", "64512:79", bgp.RF_EVPN, "64512:79"})
 			} else {
 				bgpConfig, added, deleted = config.UpdateConfig(bgpConfig, &newConfig.Bgp)
 			}

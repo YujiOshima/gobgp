@@ -28,8 +28,8 @@ import (
 
 type Path interface {
 	String() string
-	getPathAttrs() []bgp.PathAttributeInterface
-	getPathAttr(bgp.BGPAttrType) (int, bgp.PathAttributeInterface)
+	GetPathAttrs() []bgp.PathAttributeInterface
+	GetPathAttr(bgp.BGPAttrType) (int, bgp.PathAttributeInterface)
 	updatePathAttrs(global *config.Global, peer *config.Neighbor)
 	GetRouteFamily() bgp.RouteFamily
 	setSource(source *PeerInfo)
@@ -43,7 +43,7 @@ type Path interface {
 	setMedSetByTargetNeighbor(medSetByTargetNeighbor bool)
 	getMedSetByTargetNeighbor() bool
 	clone(IsWithdraw bool) Path
-	getTimestamp() time.Time
+	GetTimestamp() time.Time
 	setTimestamp(t time.Time)
 	MarshalJSON() ([]byte, error)
 }
@@ -149,7 +149,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 		//  3) if the AS_PATH is empty, the local system creates a path
 		//     segment of type AS_SEQUENCE, places its own AS into that
 		//     segment, and places that segment into the AS_PATH.
-		idx, originalAsPath := pd.getPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH)
+		idx, originalAsPath := pd.GetPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH)
 		if idx < 0 {
 			log.Fatal("missing AS_PATH mandatory attribute")
 		}
@@ -166,7 +166,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 		}
 
 		// MED Handling
-		idx, _ = pd.getPathAttr(bgp.BGP_ATTR_TYPE_MULTI_EXIT_DISC)
+		idx, _ = pd.GetPathAttr(bgp.BGP_ATTR_TYPE_MULTI_EXIT_DISC)
 		if idx >= 0 {
 			pd.pathAttrs = append(pd.pathAttrs[:idx], pd.pathAttrs[idx+1:]...)
 		}
@@ -175,7 +175,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 		// for connected or local prefixes.
 		// We set default local-pref 100.
 		p := bgp.NewPathAttributeLocalPref(100)
-		idx, _ := pd.getPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF)
+		idx, _ := pd.GetPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF)
 		if idx < 0 {
 			pd.pathAttrs = append(pd.pathAttrs, p)
 		} else {
@@ -189,7 +189,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 	}
 }
 
-func (pd *PathDefault) getTimestamp() time.Time {
+func (pd *PathDefault) GetTimestamp() time.Time {
 	return pd.timestamp
 }
 
@@ -206,7 +206,7 @@ func (pd *PathDefault) MarshalJSON() ([]byte, error) {
 	}{
 		Network: pd.getPrefix(),
 		Nexthop: pd.nexthop.String(),
-		Attrs:   pd.getPathAttrs(),
+		Attrs:   pd.GetPathAttrs(),
 		Age:     time.Now().Sub(pd.timestamp).Seconds(),
 	})
 }
@@ -263,11 +263,11 @@ func (pd *PathDefault) getMedSetByTargetNeighbor() bool {
 	return pd.medSetByTargetNeighbor
 }
 
-func (pd *PathDefault) getPathAttrs() []bgp.PathAttributeInterface {
+func (pd *PathDefault) GetPathAttrs() []bgp.PathAttributeInterface {
 	return pd.pathAttrs
 }
 
-func (pd *PathDefault) getPathAttr(pattrType bgp.BGPAttrType) (int, bgp.PathAttributeInterface) {
+func (pd *PathDefault) GetPathAttr(pattrType bgp.BGPAttrType) (int, bgp.PathAttributeInterface) {
 	attrMap := [bgp.BGP_ATTR_TYPE_AS4_AGGREGATOR + 1]reflect.Type{}
 	attrMap[bgp.BGP_ATTR_TYPE_ORIGIN] = reflect.TypeOf(&bgp.PathAttributeOrigin{})
 	attrMap[bgp.BGP_ATTR_TYPE_AS_PATH] = reflect.TypeOf(&bgp.PathAttributeAsPath{})
@@ -350,7 +350,7 @@ func NewIPv4Path(source *PeerInfo, nlri bgp.AddrPrefixInterface, isWithdraw bool
 	ipv4Path := &IPv4Path{}
 	ipv4Path.PathDefault = NewPathDefault(bgp.RF_IPv4_UC, source, nlri, nil, isWithdraw, attrs, medSetByTargetNeighbor, now)
 	if !isWithdraw {
-		_, nexthop_attr := ipv4Path.getPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP)
+		_, nexthop_attr := ipv4Path.GetPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP)
 		ipv4Path.nexthop = nexthop_attr.(*bgp.PathAttributeNextHop).Value
 	}
 	return ipv4Path
@@ -371,7 +371,7 @@ func NewIPv6Path(source *PeerInfo, nlri bgp.AddrPrefixInterface, isWithdraw bool
 	ipv6Path := &IPv6Path{}
 	ipv6Path.PathDefault = NewPathDefault(bgp.RF_IPv6_UC, source, nlri, nil, isWithdraw, attrs, medSetByTargetNeighbor, now)
 	if !isWithdraw {
-		_, mpattr := ipv6Path.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+		_, mpattr := ipv6Path.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 		ipv6Path.nexthop = mpattr.(*bgp.PathAttributeMpReachNLRI).Nexthop
 	}
 	return ipv6Path
@@ -414,7 +414,7 @@ func (ipv6p *IPv6Path) MarshalJSON() ([]byte, error) {
 	}{
 		Network: ipv6p.getPrefix(),
 		Nexthop: ipv6p.PathDefault.nexthop.String(),
-		Attrs:   ipv6p.PathDefault.getPathAttrs(),
+		Attrs:   ipv6p.PathDefault.GetPathAttrs(),
 		Age:     time.Now().Sub(ipv6p.PathDefault.timestamp).Seconds(),
 	})
 }
@@ -427,7 +427,7 @@ func NewIPv4VPNPath(source *PeerInfo, nlri bgp.AddrPrefixInterface, isWithdraw b
 	ipv4VPNPath := &IPv4VPNPath{}
 	ipv4VPNPath.PathDefault = NewPathDefault(bgp.RF_IPv4_VPN, source, nlri, nil, isWithdraw, attrs, medSetByTargetNeighbor, now)
 	if !isWithdraw {
-		_, mpattr := ipv4VPNPath.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+		_, mpattr := ipv4VPNPath.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 		ipv4VPNPath.nexthop = mpattr.(*bgp.PathAttributeMpReachNLRI).Nexthop
 	}
 	return ipv4VPNPath
@@ -470,7 +470,7 @@ func (ipv4vpnp *IPv4VPNPath) MarshalJSON() ([]byte, error) {
 	}{
 		Network: ipv4vpnp.getPrefix(),
 		Nexthop: ipv4vpnp.PathDefault.nexthop.String(),
-		Attrs:   ipv4vpnp.PathDefault.getPathAttrs(),
+		Attrs:   ipv4vpnp.PathDefault.GetPathAttrs(),
 		Age:     time.Now().Sub(ipv4vpnp.PathDefault.timestamp).Seconds(),
 	})
 }
@@ -483,7 +483,7 @@ func NewEVPNPath(source *PeerInfo, nlri bgp.AddrPrefixInterface, isWithdraw bool
 	EVPNPath := &EVPNPath{}
 	EVPNPath.PathDefault = NewPathDefault(bgp.RF_EVPN, source, nlri, nil, isWithdraw, attrs, medSetByTargetNeighbor, now)
 	if !isWithdraw {
-		_, mpattr := EVPNPath.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+		_, mpattr := EVPNPath.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 		EVPNPath.nexthop = mpattr.(*bgp.PathAttributeMpReachNLRI).Nexthop
 	}
 
@@ -527,7 +527,7 @@ func (evpnp *EVPNPath) MarshalJSON() ([]byte, error) {
 	}{
 		Network: evpnp.getPrefix(),
 		Nexthop: evpnp.PathDefault.nexthop.String(),
-		Attrs:   evpnp.PathDefault.getPathAttrs(),
+		Attrs:   evpnp.PathDefault.GetPathAttrs(),
 		Age:     time.Now().Sub(evpnp.PathDefault.timestamp).Seconds(),
 	})
 }

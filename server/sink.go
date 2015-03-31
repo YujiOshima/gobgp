@@ -48,7 +48,7 @@ type peerMsg struct {
 	msgData interface{}
 }
 
-type Sink interface {
+type SinkInterface interface {
 	setPolicy(policyMap map[string]*policy.Policy)
 	configuredRFlist() []bgp.RouteFamily
 	sendPathsToSiblings(pathList []table.Path)
@@ -69,7 +69,7 @@ type Sink interface {
 	setserverMsgCh(*serverMsg)
 }
 
-type SinkDedault struct {
+type SinkInterfaceDefault struct {
 	t            tomb.Tomb
 	globalConfig config.Global
 	peerConfig   config.Neighbor
@@ -91,10 +91,11 @@ type SinkDedault struct {
 	defaultImportPolicy config.DefaultPolicyType
 	exportPolicies      []*policy.Policy
 	defaultExportPolicy config.DefaultPolicyType
+	calliInterface      SinkInterface
 }
 
-func NewSinkDefault(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) *SinkDedault {
-	sinkd := &SinkDedault{
+func NewSinkInterfaceDefault(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) *SinkInterfaceDefault {
+	sinkd := &SinkInterfaceDefault{
 		globalConfig: g,
 		peerConfig:   peer,
 		connCh:       make(chan net.Conn),
@@ -124,10 +125,11 @@ func NewSinkDefault(g config.Global, peer config.Neighbor, serverMsgCh chan *ser
 	sinkd.adjRib = table.NewAdjRib(rfList)
 	sinkd.rib = table.NewTableManager(sinkd.peerConfig.NeighborAddress.String(), rfList)
 	sinkd.setPolicy(policyMap)
+	sinkd.calliInterface = sinkd
 	return sinkd
 }
 
-func (sinkd *SinkDedault) setPolicy(policyMap map[string]*policy.Policy) {
+func (sinkd *SinkInterfaceDefault) setPolicy(policyMap map[string]*policy.Policy) {
 	// configure import policy
 	policyConfig := sinkd.peerConfig.ApplyPolicy
 	inPolicies := make([]*policy.Policy, 0)
@@ -160,7 +162,7 @@ func (sinkd *SinkDedault) setPolicy(policyMap map[string]*policy.Policy) {
 	sinkd.exportPolicies = outPolicies
 }
 
-func (sinkd *SinkDedault) configuredRFlist() []bgp.RouteFamily {
+func (sinkd *SinkInterfaceDefault) configuredRFlist() []bgp.RouteFamily {
 	rfList := []bgp.RouteFamily{}
 	for _, rf := range sinkd.peerConfig.AfiSafiList {
 		k, _ := bgp.GetRouteFamily(rf.AfiSafiName)
@@ -169,7 +171,7 @@ func (sinkd *SinkDedault) configuredRFlist() []bgp.RouteFamily {
 	return rfList
 }
 
-func (sinkd *SinkDedault) sendPathsToSiblings(pathList []table.Path) {
+func (sinkd *SinkInterfaceDefault) sendPathsToSiblings(pathList []table.Path) {
 	if len(pathList) == 0 {
 		return
 	}
@@ -182,7 +184,7 @@ func (sinkd *SinkDedault) sendPathsToSiblings(pathList []table.Path) {
 	}
 }
 
-func (sinkd *SinkDedault) handleBGPmessage(m *bgp.BGPMessage) {
+func (sinkd *SinkInterfaceDefault) handleBGPmessage(m *bgp.BGPMessage) {
 	log.WithFields(log.Fields{
 		"Topic": "Peer",
 		"Key":   sinkd.peerConfig.NeighborAddress,
@@ -275,7 +277,7 @@ func (sinkd *SinkDedault) handleBGPmessage(m *bgp.BGPMessage) {
 	}
 }
 
-func (sinkd *SinkDedault) sendMessages(msgs []*bgp.BGPMessage) {
+func (sinkd *SinkInterfaceDefault) sendMessages(msgs []*bgp.BGPMessage) {
 	for _, m := range msgs {
 		if sinkd.peerConfig.BgpNeighborCommonState.State != uint32(bgp.BGP_FSM_ESTABLISHED) {
 			continue
@@ -299,10 +301,10 @@ func (sinkd *SinkDedault) sendMessages(msgs []*bgp.BGPMessage) {
 	}
 }
 
-func (sinkd *SinkDedault) handleREST(restReq *api.RestRequest) {
+func (sinkd *SinkInterfaceDefault) handleREST(restReq *api.RestRequest) {
 	result := &api.RestResponse{}
 	switch restReq.RequestType {
-	case api.REQ_LOCAL_RIB, api.REQ_GLOBAL_RIB:
+	case api.REQ_LOCAL_RIB, api.REQ_GLOBAL_RIB, api.REQ_VRF_RIB:
 		// just empty so we use ipv4 for any route family
 		j, _ := json.Marshal(table.NewIPv4Table(0))
 		if sinkd.fsm.adminState != ADMIN_STATE_DOWN {
@@ -374,7 +376,7 @@ func (sinkd *SinkDedault) handleREST(restReq *api.RestRequest) {
 	close(restReq.ResponseCh)
 }
 
-func (sinkd *SinkDedault) sendUpdateMsgFromPaths(pList []table.Path) {
+func (sinkd *SinkInterfaceDefault) sendUpdateMsgFromPaths(pList []table.Path) {
 	pList = table.CloneAndUpdatePathAttrs(pList, &sinkd.globalConfig, &sinkd.peerConfig)
 
 	paths := []table.Path{}
@@ -476,7 +478,7 @@ func applyPolicies(policies []*policy.Policy, original *table.Path) (bool, *tabl
 	return !applied, original
 }
 
-func (sinkd *SinkDedault) handlePeerMsg(m *peerMsg) {
+func (sinkd *SinkInterfaceDefault) handlePeerMsg(m *peerMsg) {
 	switch m.msgType {
 	case PEER_MSG_PATH:
 		pList := m.msgData.([]table.Path)
@@ -516,23 +518,23 @@ func (sinkd *SinkDedault) handlePeerMsg(m *peerMsg) {
 			}
 		}
 		log.Debug("length of paths: ", len(paths))
-		sinkd.sendUpdateMsgFromPaths(paths)
+		sinkd.calliInterface.sendUpdateMsgFromPaths(paths)
 
 	case PEER_MSG_PEER_DOWN:
 		for _, rf := range sinkd.configuredRFlist() {
 			pList, _ := sinkd.rib.DeletePathsforPeer(m.msgData.(*table.PeerInfo), rf)
-			sinkd.sendPathsToSiblings(pList)
+			sinkd.calliInterface.sendPathsToSiblings(pList)
 		}
 	}
 }
 
-func (sinkd *SinkDedault) handleServerMsg(m *serverMsg) {
+func (sinkd *SinkInterfaceDefault) handleServerMsg(m *serverMsg) {
 	switch m.msgType {
 	case SRV_MSG_PEER_ADDED:
 		d := m.msgData.(*serverMsgDataPeer)
 		sinkd.siblings[d.address.String()] = d
 		for _, rf := range sinkd.configuredRFlist() {
-			sinkd.sendPathsToSiblings(sinkd.rib.GetPathList(rf))
+			sinkd.calliInterface.sendPathsToSiblings(sinkd.rib.GetPathList(rf))
 		}
 	case SRV_MSG_PEER_DELETED:
 		d := m.msgData.(*table.PeerInfo)
@@ -540,23 +542,23 @@ func (sinkd *SinkDedault) handleServerMsg(m *serverMsg) {
 			delete(sinkd.siblings, d.Address.String())
 			for _, rf := range sinkd.configuredRFlist() {
 				pList, _ := sinkd.rib.DeletePathsforPeer(d, rf)
-				sinkd.sendPathsToSiblings(pList)
+				sinkd.calliInterface.sendPathsToSiblings(pList)
 			}
 		} else {
 			log.Warning("can not find peer: ", d.Address.String())
 		}
 	case SRV_MSG_API:
-		sinkd.handleREST(m.msgData.(*api.RestRequest))
+		sinkd.calliInterface.handleREST(m.msgData.(*api.RestRequest))
 	case SRV_MSG_POLICY_UPDATED:
 		log.Debug("policy updated")
 		d := m.msgData.(map[string]*policy.Policy)
-		sinkd.setPolicy(d)
+		sinkd.calliInterface.setPolicy(d)
 	default:
 		log.Fatal("unknown server msg type ", m.msgType)
 	}
 }
 
-func (sinkd *SinkDedault) connectLoop() error {
+func (sinkd *SinkInterfaceDefault) connectLoop() error {
 	var tick int
 	if tick = int(sinkd.fsm.peerConfig.Timers.ConnectRetry); tick < MIN_CONNECT_RETRY {
 		tick = MIN_CONNECT_RETRY
@@ -607,7 +609,7 @@ func (sinkd *SinkDedault) connectLoop() error {
 }
 
 // this goroutine handles routing table operations
-func (sinkd *SinkDedault) loop() error {
+func (sinkd *SinkInterfaceDefault) loop() error {
 	for {
 		incoming := make(chan *fsmMsg, FSM_CHANNEL_LENGTH)
 		sinkd.outgoing = make(chan *bgp.BGPMessage, FSM_CHANNEL_LENGTH)
@@ -619,7 +621,7 @@ func (sinkd *SinkDedault) loop() error {
 			sinkd.peerConfig.LocalAddress = sinkd.fsm.LocalAddr()
 			for rf, _ := range sinkd.rfMap {
 				pathList := sinkd.adjRib.GetOutPathList(rf)
-				sinkd.sendMessages(table.CreateUpdateMsgFromPaths(pathList))
+				sinkd.calliInterface.sendMessages(table.CreateUpdateMsgFromPaths(pathList))
 			}
 			sinkd.fsm.peerConfig.BgpNeighborCommonState.Uptime = time.Now().Unix()
 			sinkd.fsm.peerConfig.BgpNeighborCommonState.EstablishedCount++
@@ -675,13 +677,12 @@ func (sinkd *SinkDedault) loop() error {
 					if h.fsm.adminState == ADMIN_STATE_DOWN {
 						h.fsm.peerConfig.BgpNeighborCommonState = config.BgpNeighborCommonState{}
 					}
-
 				case FSM_MSG_BGP_MESSAGE:
 					switch m := e.MsgData.(type) {
 					case *bgp.MessageError:
 						sinkd.outgoing <- bgp.NewBGPNotificationMessage(m.TypeCode, m.SubTypeCode, m.Data)
 					case *bgp.BGPMessage:
-						sinkd.handleBGPmessage(m)
+						sinkd.calliInterface.handleBGPmessage(m)
 					default:
 						log.WithFields(log.Fields{
 							"Topic": "Peer",
@@ -691,37 +692,37 @@ func (sinkd *SinkDedault) loop() error {
 					}
 				}
 			case m := <-sinkd.serverMsgCh:
-				sinkd.handleServerMsg(m)
+				sinkd.calliInterface.handleServerMsg(m)
 			case m := <-sinkd.peerMsgCh:
-				sinkd.handlePeerMsg(m)
+				sinkd.calliInterface.handlePeerMsg(m)
 			}
 		}
 	}
 }
 
-func (sinkd *SinkDedault) Stop() error {
+func (sinkd *SinkInterfaceDefault) Stop() error {
 	sinkd.t.Kill(nil)
 	return sinkd.t.Wait()
 }
 
-func (sinkd *SinkDedault) PassConn(conn *net.TCPConn) {
+func (sinkd *SinkInterfaceDefault) PassConn(conn *net.TCPConn) {
 	sinkd.connCh <- conn
 }
 
-func (sinkd *SinkDedault) getpeerInfo() *table.PeerInfo {
+func (sinkd *SinkInterfaceDefault) getpeerInfo() *table.PeerInfo {
 	return sinkd.peerInfo
 }
-func (sinkd *SinkDedault) setpeerInfo(pinfo *table.PeerInfo) {
+func (sinkd *SinkInterfaceDefault) setpeerInfo(pinfo *table.PeerInfo) {
 	sinkd.peerInfo = pinfo
 }
-func (sinkd *SinkDedault) getserverMsgCh() chan *serverMsg {
+func (sinkd *SinkInterfaceDefault) getserverMsgCh() chan *serverMsg {
 	return sinkd.serverMsgCh
 }
-func (sinkd *SinkDedault) setserverMsgCh(smsg *serverMsg) {
+func (sinkd *SinkInterfaceDefault) setserverMsgCh(smsg *serverMsg) {
 	sinkd.serverMsgCh <- smsg
 }
 
-func (sinkd *SinkDedault) MarshalJSON() ([]byte, error) {
+func (sinkd *SinkInterfaceDefault) MarshalJSON() ([]byte, error) {
 
 	f := sinkd.fsm
 	c := f.peerConfig
@@ -828,12 +829,13 @@ func (sinkd *SinkDedault) MarshalJSON() ([]byte, error) {
 }
 
 type Peer struct {
-	*SinkDedault
+	*SinkInterfaceDefault
 }
 
 func NewPeer(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) *Peer {
 	p := &Peer{}
-	p.SinkDedault = NewSinkDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	p.SinkInterfaceDefault = NewSinkInterfaceDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	p.calliInterface = p
 	p.t.Go(p.loop)
 	if !peer.TransportOptions.PassiveMode {
 		p.t.Go(p.connectLoop)
@@ -843,12 +845,13 @@ func NewPeer(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg,
 }
 
 type RouteServerClient struct {
-	*SinkDedault
+	*SinkInterfaceDefault
 }
 
 func NewRouteServerClient(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) *RouteServerClient {
 	r := &RouteServerClient{}
-	r.SinkDedault = NewSinkDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	r.SinkInterfaceDefault = NewSinkInterfaceDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	r.calliInterface = r
 	r.t.Go(r.loop)
 	if !peer.TransportOptions.PassiveMode {
 		r.t.Go(r.connectLoop)
@@ -938,7 +941,7 @@ func (rsc *RouteServerClient) handleServerMsg(m *serverMsg) {
 	}
 }
 
-func NewPeerORRouteServerClient(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) Sink {
+func NewPeerORRouteServerClient(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) SinkInterface {
 	if peer.RouteServer.RouteServerClient {
 		return NewRouteServerClient(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
 	} else {
@@ -947,17 +950,44 @@ func NewPeerORRouteServerClient(g config.Global, peer config.Neighbor, serverMsg
 }
 
 type GlobalRib struct {
-	*SinkDedault
+	*SinkInterfaceDefault
+	vrfslist map[string]*serverMsgDataVRF
 }
 
 func NewGlobalRib(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy) *GlobalRib {
 	grib := &GlobalRib{}
-	grib.SinkDedault = NewSinkDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	grib.SinkInterfaceDefault = NewSinkInterfaceDefault(g, peer, serverMsgCh, peerMsgCh, peerList, policyMap)
+	grib.calliInterface = grib
+	grib.vrfslist = make(map[string]*serverMsgDataVRF)
 	grib.t.Go(grib.loop)
 	return grib
 
 }
+func (grib *GlobalRib) sendPathsToVRFs(pList []table.Path) {
+	if len(pList) == 0 {
+		return
+	}
+	for _, v := range grib.vrfslist {
+		var pathList []table.Path
+		for _, p := range pList {
+			for _, pol := range v.imRTpolicy {
+				if result, _, newpath := pol.Apply(p); result {
+					log.WithFields(log.Fields{
+						"Topic": "Peer",
+						"RD:":   v.routedistinguisher,
+					}).Debug("Import Path to VRF:", newpath)
+					pathList = append(pathList, newpath)
+				}
+				pm := &peerMsg{
+					msgType: PEER_MSG_PATH,
+					msgData: pathList,
+				}
+				v.peerMsgCh <- pm
+			}
+		}
+	}
 
+}
 func (grib *GlobalRib) handlePeerMsg(m *peerMsg) {
 	switch m.msgType {
 	case PEER_MSG_PATH:
@@ -1000,6 +1030,7 @@ func (grib *GlobalRib) handlePeerMsg(m *peerMsg) {
 		log.Debug("length of paths: ", len(paths))
 		paths, _ = grib.rib.ProcessPaths(paths)
 		grib.sendPathsToSiblings(paths)
+		grib.sendPathsToVRFs(paths)
 
 	case PEER_MSG_PEER_DOWN:
 		for _, rf := range grib.configuredRFlist() {
@@ -1028,6 +1059,18 @@ func (grib *GlobalRib) handleServerMsg(m *serverMsg) {
 		} else {
 			log.Warning("can not find peer: ", d.Address.String())
 		}
+	case SRV_MSG_VRF_ADDED:
+		d := m.msgData.(*serverMsgDataVRF)
+		grib.vrfslist[d.routedistinguisher] = d
+
+	case SRV_MSG_VRF_DELETED:
+		d := m.msgData.(*serverMsgDataVRF)
+		if _, ok := grib.vrfslist[d.routedistinguisher]; ok {
+			delete(grib.vrfslist, d.routedistinguisher)
+		} else {
+			log.Warning("can not find peer: ", d.routedistinguisher)
+		}
+
 	case SRV_MSG_API:
 		grib.handleREST(m.msgData.(*api.RestRequest))
 	case SRV_MSG_POLICY_UPDATED:
@@ -1041,11 +1084,7 @@ func (grib *GlobalRib) handleServerMsg(m *serverMsg) {
 
 func (grib *GlobalRib) loop() error {
 	for {
-		incoming := make(chan *fsmMsg, FSM_CHANNEL_LENGTH)
 		grib.outgoing = make(chan *bgp.BGPMessage, FSM_CHANNEL_LENGTH)
-
-		var h *FSMHandler
-
 		sameState := true
 		for sameState {
 			select {
@@ -1055,59 +1094,134 @@ func (grib *GlobalRib) loop() error {
 				// h.t.Kill(nil) will be called
 				// internall so even goroutines in
 				// non-established will be killed.
-				h.Stop()
 				return nil
-			case e := <-incoming:
-				switch e.MsgType {
-				case FSM_MSG_STATE_CHANGE:
-					nextState := e.MsgData.(bgp.FSMState)
-					// waits for all goroutines created for the current state
-					h.Wait()
-					oldState := bgp.FSMState(grib.peerConfig.BgpNeighborCommonState.State)
-					grib.peerConfig.BgpNeighborCommonState.State = uint32(nextState)
-					grib.fsm.StateChange(nextState)
-					sameState = false
-					if oldState == bgp.BGP_FSM_ESTABLISHED {
-						t := time.Now()
-						if t.Sub(time.Unix(grib.fsm.peerConfig.BgpNeighborCommonState.Uptime, 0)) < FLOP_THRESHOLD {
-							grib.fsm.peerConfig.BgpNeighborCommonState.Flops++
-						}
-
-						for _, rf := range grib.configuredRFlist() {
-							grib.adjRib.DropAllIn(rf)
-						}
-						pm := &peerMsg{
-							msgType: PEER_MSG_PEER_DOWN,
-							msgData: grib.peerInfo,
-						}
-						for _, s := range grib.siblings {
-							s.peerMsgCh <- pm
-						}
-					}
-
-					// clear counter
-					if h.fsm.adminState == ADMIN_STATE_DOWN {
-						h.fsm.peerConfig.BgpNeighborCommonState = config.BgpNeighborCommonState{}
-					}
-
-				case FSM_MSG_BGP_MESSAGE:
-					switch m := e.MsgData.(type) {
-					case *bgp.MessageError:
-						grib.outgoing <- bgp.NewBGPNotificationMessage(m.TypeCode, m.SubTypeCode, m.Data)
-					case *bgp.BGPMessage:
-						grib.handleBGPmessage(m)
-					default:
-						log.WithFields(log.Fields{
-							"Topic": "Peer",
-							"Key":   grib.peerConfig.NeighborAddress,
-							"Data":  e.MsgData,
-						}).Panic("unknonw msg type")
-					}
-				}
 			case m := <-grib.serverMsgCh:
 				grib.handleServerMsg(m)
 			case m := <-grib.peerMsgCh:
 				grib.handlePeerMsg(m)
+			}
+		}
+	}
+}
+
+type Vrf struct {
+	*SinkInterfaceDefault
+	Vrfconf VrfConfig
+}
+
+func NewVrf(g config.Global, peer config.Neighbor, serverMsgCh chan *serverMsg, peerMsgCh chan *peerMsg, peerList []*serverMsgDataPeer, policyMap map[string]*policy.Policy, vconf VrfConfig) *Vrf {
+	v := &Vrf{}
+	v.SinkInterfaceDefault = &SinkInterfaceDefault{
+		globalConfig: g,
+		peerConfig:   peer,
+		connCh:       make(chan net.Conn),
+		serverMsgCh:  serverMsgCh,
+		peerMsgCh:    peerMsgCh,
+		getActiveCh:  make(chan struct{}),
+		rfMap:        make(map[bgp.RouteFamily]bool),
+		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
+	}
+	v.siblings = make(map[string]*serverMsgDataPeer)
+	for _, s := range peerList {
+		v.siblings[s.address.String()] = s
+	}
+	v.fsm = NewFSM(&g, &peer, v.connCh)
+	peer.BgpNeighborCommonState.State = uint32(bgp.BGP_FSM_IDLE)
+	peer.BgpNeighborCommonState.Downtime = time.Now().Unix()
+	for _, rf := range peer.AfiSafiList {
+		k, _ := bgp.GetRouteFamily(rf.AfiSafiName)
+		v.rfMap[k] = true
+	}
+	v.peerInfo = &table.PeerInfo{
+		AS:      peer.PeerAs,
+		LocalID: g.RouterId,
+		Address: peer.NeighborAddress,
+	}
+	rfList := v.configuredRFlist()
+	v.adjRib = table.NewAdjRib(rfList)
+	v.setPolicy(policyMap)
+	v.Vrfconf = vconf
+
+	v.t.Go(v.loop)
+	return v
+
+}
+
+func (vrf *Vrf) handlePeerMsg(m *peerMsg) {
+	switch m.msgType {
+	case PEER_MSG_PATH:
+		pList := m.msgData.([]table.Path)
+		paths := []table.Path{}
+
+		policies := vrf.importPolicies
+		log.WithFields(log.Fields{
+			"Topic": "Peer",
+			"Key":   vrf.peerConfig.NeighborAddress,
+		}).Debug("Import Policies :", policies)
+
+		for _, p := range pList {
+			log.Debug("p: ", p)
+			if !p.IsWithdraw() {
+				log.Debug("is not withdraw")
+
+				if len(policies) != 0 {
+					applied, newPath := applyPolicies(policies, &p)
+
+					if applied {
+						if newPath != nil {
+							log.Debug("path accepted")
+							paths = append(paths, *newPath)
+						}
+					} else {
+						if vrf.defaultImportPolicy == config.DEFAULT_POLICY_TYPE_ACCEPT_ROUTE {
+							paths = append(paths, p)
+							log.Debug("path accepted by default import policy: ", p)
+						}
+					}
+				} else {
+					paths = append(paths, p)
+				}
+			} else {
+				log.Debug("is withdraw")
+				paths = append(paths, p)
+			}
+		}
+		log.Debug("length of paths: ", len(paths))
+		vrf.sendUpdateMsgFromPaths(paths)
+	}
+
+}
+
+func (vrf *Vrf) handleServerMsg(m *serverMsg) {
+	switch m.msgType {
+	case SRV_MSG_API:
+		vrf.handleREST(m.msgData.(*api.RestRequest))
+	case SRV_MSG_POLICY_UPDATED:
+		log.Debug("policy updated")
+		d := m.msgData.(map[string]*policy.Policy)
+		vrf.setPolicy(d)
+	default:
+		log.Fatal("unknown server msg type ", m.msgType)
+	}
+}
+
+func (vrf *Vrf) loop() error {
+	for {
+		vrf.outgoing = make(chan *bgp.BGPMessage, FSM_CHANNEL_LENGTH)
+		sameState := true
+		for sameState {
+			select {
+			case <-vrf.t.Dying():
+				close(vrf.connCh)
+				vrf.outgoing <- bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_PEER_DECONFIGURED, nil)
+				// h.t.Kill(nil) will be called
+				// internall so even goroutines in
+				// non-established will be killed.
+				return nil
+			case m := <-vrf.serverMsgCh:
+				vrf.handleServerMsg(m)
+			case m := <-vrf.peerMsgCh:
+				vrf.handlePeerMsg(m)
 			}
 		}
 	}

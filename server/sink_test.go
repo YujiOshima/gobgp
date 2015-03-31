@@ -875,7 +875,7 @@ func makePeer(globalConfig config.Global, peerConfig config.Neighbor) *Peer {
 	pch := make(chan *peerMsg, 4096)
 	p := &Peer{}
 
-	sd := &SinkDedault{
+	sd := &SinkInterfaceDedault{
 		globalConfig: globalConfig,
 		peerConfig:   peerConfig,
 		connCh:       make(chan net.Conn),
@@ -885,7 +885,7 @@ func makePeer(globalConfig config.Global, peerConfig config.Neighbor) *Peer {
 		rfMap:        make(map[bgp.RouteFamily]bool),
 		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
 	}
-	p.SinkDedault = sd
+	p.SinkInterfaceDedault = sd
 	p.siblings = make(map[string]*serverMsgDataPeer)
 
 	p.fsm = NewFSM(&globalConfig, &peerConfig, p.connCh)
@@ -914,7 +914,7 @@ func makeRSC(globalConfig config.Global, peerConfig config.Neighbor) *RouteServe
 	pch := make(chan *peerMsg, 4096)
 	rsc := &RouteServerClient{}
 
-	sd := &SinkDedault{
+	sd := &SinkInterfaceDedault{
 		globalConfig: globalConfig,
 		peerConfig:   peerConfig,
 		connCh:       make(chan net.Conn),
@@ -924,7 +924,7 @@ func makeRSC(globalConfig config.Global, peerConfig config.Neighbor) *RouteServe
 		rfMap:        make(map[bgp.RouteFamily]bool),
 		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
 	}
-	rsc.SinkDedault = sd
+	rsc.SinkInterfaceDedault = sd
 	rsc.siblings = make(map[string]*serverMsgDataPeer)
 
 	rsc.fsm = NewFSM(&globalConfig, &peerConfig, rsc.connCh)
@@ -953,7 +953,7 @@ func makeGrib(globalConfig config.Global, peerConfig config.Neighbor) *GlobalRib
 	pch := make(chan *peerMsg, 4096)
 	grib := &GlobalRib{}
 
-	sd := &SinkDedault{
+	sd := &SinkInterfaceDedault{
 		globalConfig: globalConfig,
 		peerConfig:   peerConfig,
 		connCh:       make(chan net.Conn),
@@ -963,7 +963,7 @@ func makeGrib(globalConfig config.Global, peerConfig config.Neighbor) *GlobalRib
 		rfMap:        make(map[bgp.RouteFamily]bool),
 		capMap:       make(map[bgp.BGPCapabilityCode]bgp.ParameterCapabilityInterface),
 	}
-	grib.SinkDedault = sd
+	grib.SinkInterfaceDedault = sd
 	grib.siblings = make(map[string]*serverMsgDataPeer)
 
 	peerConfig.BgpNeighborCommonState.State = uint32(bgp.BGP_FSM_IDLE)

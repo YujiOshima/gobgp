@@ -1307,6 +1307,27 @@ func RouteFamilyToAfiSafi(rf RouteFamily) (uint16, uint8) {
 	return uint16(int(rf) >> 16), uint8(int(rf) & 0xff)
 }
 
+func GetRDfromNlri(nlri AddrPrefixInterface) RouteDistinguisherInterface {
+	switch n := nlri.(type) {
+	case *LabelledVPNIPAddrPrefix:
+	case *LabelledIPv6AddrPrefix:
+	case *EVPNNLRI:
+		switch m := n.RouteTypeData.(type) {
+		case *EVPNEthernetAutoDiscoveryRoute:
+			return m.RD
+		case *EVPNMacIPAdvertisementRoute:
+			return m.RD
+		case *EVPNMulticastEthernetTagRoute:
+			return m.RD
+		case *EVPNEthernetSegmentRoute:
+			return m.RD
+		}
+	default:
+		return nil
+	}
+	return nil
+}
+
 type RouteFamily int
 
 const (

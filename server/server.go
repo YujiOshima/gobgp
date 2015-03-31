@@ -21,6 +21,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
+	"github.com/osrg/gobgp/packet"
 	"github.com/osrg/gobgp/policy"
 	"net"
 	"os"
@@ -36,6 +37,8 @@ const (
 	SRV_MSG_PEER_DELETED
 	SRV_MSG_API
 	SRV_MSG_POLICY_UPDATED
+	SRV_MSG_VRF_ADDED
+	SRV_MSG_VRF_DELETED
 )
 
 type serverMsg struct {
@@ -49,11 +52,33 @@ type serverMsgDataPeer struct {
 }
 
 type peerMapInfo struct {
-	peer                Sink
+	peer                SinkInterface
 	serverMsgCh         chan *serverMsg
 	peerMsgCh           chan *peerMsg
 	peerMsgData         *serverMsgDataPeer
 	isRouteServerClient bool
+}
+
+type serverMsgDataVRF struct {
+	peerMsgCh          chan *peerMsg
+	Name               string
+	routedistinguisher string
+	imRTpolicy         []*policy.Policy
+	exRTpolicy         *policy.Policy
+}
+
+type VrfMapInfo struct {
+	vrf        *Vrf
+	vrfMsgData *serverMsgDataVRF
+}
+
+type VrfConfig struct {
+	Name        string
+	Rdtype      uint16
+	ImportRt    string
+	ExportRt    string
+	Rf          bgp.RouteFamily
+	Routetarget string
 }
 
 type BgpServer struct {
@@ -61,10 +86,13 @@ type BgpServer struct {
 	globalTypeCh   chan config.Global
 	addedPeerCh    chan config.Neighbor
 	deletedPeerCh  chan config.Neighbor
+	addedVrfCh     chan VrfConfig
+	deletedVrfCh   chan VrfConfig
 	RestReqCh      chan *api.RestRequest
 	listenPort     int
 	peerMap        map[string]peerMapInfo
-	globalRib      Sink
+	globalRib      SinkInterface
+	vrfMap         map[string]VrfMapInfo
 	policyUpdateCh chan config.RoutingPolicy
 	policyMap      map[string]*policy.Policy
 }
@@ -74,6 +102,8 @@ func NewBgpServer(port int) *BgpServer {
 	b.globalTypeCh = make(chan config.Global)
 	b.addedPeerCh = make(chan config.Neighbor)
 	b.deletedPeerCh = make(chan config.Neighbor)
+	b.addedVrfCh = make(chan VrfConfig)
+	b.deletedVrfCh = make(chan VrfConfig)
 	b.RestReqCh = make(chan *api.RestRequest, 1)
 	b.policyUpdateCh = make(chan config.RoutingPolicy)
 	b.listenPort = port
@@ -142,6 +172,7 @@ func (server *BgpServer) Serve() {
 	}
 
 	server.peerMap = make(map[string]peerMapInfo)
+	server.vrfMap = make(map[string]VrfMapInfo)
 	for {
 		select {
 		case conn := <-acceptCh:
@@ -222,6 +253,31 @@ func (server *BgpServer) Serve() {
 			} else {
 				log.Info("Can't delete a peer configuration for ", addr)
 			}
+		case vrf := <-server.addedVrfCh:
+			sch := make(chan *serverMsg, 8)
+			pch := make(chan *peerMsg, 4096)
+			globalRib := &serverMsgDataPeer{
+				address:   server.bgpConfig.Global.RouterId,
+				peerMsgCh: globalPch,
+			}
+			l := []*serverMsgDataPeer{globalRib}
+			v := NewVrf(server.bgpConfig.Global, neighConf, sch, pch, l, make(map[string]*policy.Policy), vrf)
+			d := &serverMsgDataVRF{
+				peerMsgCh:          pch,
+				routedistinguisher: vrf.Routetarget,
+			}
+			d.imRTpolicy = append(d.imRTpolicy, policy.NewVrfPolicy(vrf.Name, vrf.ImportRt, vrf.Rdtype, vrf.Rf, policy.IMPORT_VRF_POLICY))
+			d.exRTpolicy = policy.NewVrfPolicy(vrf.Name, vrf.ExportRt, vrf.Rdtype, vrf.Rf, policy.EXPORT_VRF_POLICY)
+			msg := &serverMsg{
+				msgType: SRV_MSG_VRF_ADDED,
+				msgData: d,
+			}
+			globalSch <- msg
+			server.vrfMap[vrf.Name] = VrfMapInfo{
+				vrf:        v,
+				vrfMsgData: d,
+			}
+
 		case restReq := <-server.RestReqCh:
 			server.handleRest(restReq)
 		case pl := <-server.policyUpdateCh:
@@ -261,6 +317,14 @@ func (server *BgpServer) PeerDelete(peer config.Neighbor) {
 	server.deletedPeerCh <- peer
 }
 
+func (server *BgpServer) VrfAdd(vrf VrfConfig) {
+	server.addedVrfCh <- vrf
+}
+
+func (server *BgpServer) VrfDelete(vrf VrfConfig) {
+	server.deletedVrfCh <- vrf
+}
+
 func (server *BgpServer) UpdatePolicy(policy config.RoutingPolicy) {
 	server.policyUpdateCh <- policy
 }
@@ -278,7 +342,7 @@ func (server *BgpServer) handleRest(restReq *api.RestRequest) {
 	switch restReq.RequestType {
 	case api.REQ_NEIGHBORS:
 		result := &api.RestResponse{}
-		peerList := make([]Sink, 0)
+		peerList := make([]SinkInterface, 0)
 		for _, info := range server.peerMap {
 			peerList = append(peerList, info.peer)
 		}
@@ -306,6 +370,23 @@ func (server *BgpServer) handleRest(restReq *api.RestRequest) {
 			msgData: restReq,
 		}
 		server.globalRib.setserverMsgCh(msg)
+
+	case api.REQ_VRF_RIB:
+		remoteAddr := restReq.RemoteAddr
+		result := &api.RestResponse{}
+		info, found := server.vrfMap[remoteAddr]
+		if found {
+			msg := &serverMsg{
+				msgType: SRV_MSG_API,
+				msgData: restReq,
+			}
+			info.vrf.setserverMsgCh(msg)
+		} else {
+			result.ResponseErr = fmt.Errorf("VRF %v does not exist.", remoteAddr)
+			restReq.ResponseCh <- result
+			close(restReq.ResponseCh)
+		}
+
 	case api.REQ_LOCAL_RIB, api.REQ_NEIGHBOR_SHUTDOWN, api.REQ_NEIGHBOR_RESET,
 		api.REQ_NEIGHBOR_SOFT_RESET, api.REQ_NEIGHBOR_SOFT_RESET_IN, api.REQ_NEIGHBOR_SOFT_RESET_OUT,
 		api.REQ_ADJ_RIB_IN, api.REQ_ADJ_RIB_OUT,

@@ -41,6 +41,11 @@ const (
 	MASK_LENGTH_RANGE_MAX
 )
 
+const (
+	IMPORT_VRF_POLICY = iota
+	EXPORT_VRF_POLICY
+)
+
 type Policy struct {
 	Name       string
 	Statements []Statement
@@ -102,6 +107,43 @@ func NewPolicy(name string, pd config.PolicyDefinition, ds config.DefinedSets) *
 		}
 		st = append(st, s)
 	}
+	p.Statements = st
+	return p
+}
+func NewVrfPolicy(name string, route_target string, rd_type uint16, rf_type bgp.RouteFamily, policy_type int) *Policy {
+	st := make([]Statement, 0)
+	p := &Policy{}
+	s := Statement{}
+
+	switch policy_type {
+	case IMPORT_VRF_POLICY:
+		p.Name = "VRF_Import:" + name
+		con := &ImportVrfConditions{
+			inRouteTarget: route_target,
+			RDtype:        rd_type,
+			RFtype:        rf_type,
+		}
+		act := &IntoVRFActions{
+			RFtype: rf_type,
+		}
+		s.Name = route_target
+		s.Conditions = con
+		s.Actions = act
+	case EXPORT_VRF_POLICY:
+		p.Name = "VRF_Export:" + name
+		con := &ExportVrfConditions{
+			exRouteTarget: route_target,
+			RDtype:        rd_type,
+			RFtype:        rf_type,
+		}
+		act := &ExportVRFActions{
+			RFtype: rf_type,
+		}
+		s.Name = route_target
+		s.Conditions = con
+		s.Actions = act
+	}
+	st = append(st, s)
 	p.Statements = st
 	return p
 }
@@ -209,6 +251,29 @@ func (r *RoutingActions) apply(path table.Path) table.Path {
 	} else {
 		return nil
 	}
+}
+
+type IntoVRFActions struct {
+	DefaultActions
+	RFtype bgp.RouteFamily
+}
+
+type ExportVRFActions struct {
+	DefaultActions
+	RFtype bgp.RouteFamily
+}
+
+func (ev *ExportVRFActions) apply(path table.Path) table.Path {
+	switch ev.RFtype {
+	case bgp.RF_IPv4_UC:
+	case bgp.RF_IPv6_UC:
+	case bgp.RF_IPv4_VPN:
+	case bgp.RF_IPv6_VPN:
+	case bgp.RF_EVPN:
+	default:
+		return nil
+	}
+	return nil
 }
 
 type ModificationActions struct {
@@ -334,4 +399,39 @@ func IpPrefixCalculate(path table.Path, cPrefix Prefix) bool {
 		return true
 	}
 	return false
+}
+
+type ImportVrfConditions struct {
+	DefaultConditions
+	inRouteTarget string
+	RDtype        uint16
+	RFtype        bgp.RouteFamily
+}
+
+func (rt *ImportVrfConditions) evaluate(path table.Path) bool {
+	rf := path.GetRouteFamily()
+	_, extattr := path.GetPathAttr(bgp.BGP_ATTR_TYPE_EXTENDED_COMMUNITIES)
+	if extattr == nil {
+		return false
+	}
+	extpcom, ok := extattr.(*bgp.PathAttributeExtendedCommunities)
+	if !ok {
+		return false
+	}
+	ret := extpcom.Value[0].String() == rt.inRouteTarget && rf == rt.RFtype
+	log.Debug("evaluate Import Route Target : ", ret)
+	return ret
+}
+
+type ExportVrfConditions struct {
+	DefaultConditions
+	exRouteTarget string
+	RDtype        uint16
+	RFtype        bgp.RouteFamily
+}
+
+func (rt *ExportVrfConditions) evaluate(path table.Path) bool {
+	ret := true
+	log.Debug("evaluate Export Route Target : ", ret)
+	return ret
 }
