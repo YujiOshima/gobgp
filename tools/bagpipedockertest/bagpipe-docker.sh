@@ -93,7 +93,9 @@ case "$1" in
         sudo docker pull yoshima/bagpipebgp
         sudo docker pull osrg/gobgp
 	sudo mkdir /usr/local/gobgp
-	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp go run /root/gobgp/tools/route-server/bagpipebgp-rsconfig.go -c /mnt
+	# sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp go run /root/gobgp/tools/route-server/bagpipebgp-rsconfig.go -c /mnt
+	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp /bin/bash
+	go run bagpipebgp-rsconfig.go -c /usr/local/gobgp
 	;;
     *)
 	echo $1
