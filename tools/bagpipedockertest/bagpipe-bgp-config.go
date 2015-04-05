@@ -35,7 +35,7 @@ func (qt *BagpipebgpConfig) Config() *bytes.Buffer {
 	buf.WriteString("[BGP]\n")
 	buf.WriteString(fmt.Sprintf("local_address=192.168.0.%d\n", qt.id))
 	buf.WriteString(fmt.Sprintf("peers=%s\n", qt.serverIP, qt.gobgpConfig.As))
-	buf.WriteString(fmt.Sprintf("my_as=%d\n"))
+	buf.WriteString(fmt.Sprintf("my_as=%d\n", qt.gobgpConfig.As))
 	buf.WriteString("[API]\n")
 	buf.WriteString("api_host=localhost \n")
 	buf.WriteString("api_port=8082\n")
@@ -64,7 +64,7 @@ func create_config_files(nr int, outputDir string) {
 		q := NewBagpipebgpConfig(i, &gobgpConf.Global, &c, net.ParseIP("10.0.255.1"))
 		bagpipebgpConfigList = append(bagpipebgpConfigList, q)
 		os.Mkdir(fmt.Sprintf("%s/q%d", outputDir, i), 0755)
-		err := ioutil.WriteFile(fmt.Sprintf("%s/q%d/bgpd.conf", outputDir, i), q.Config().Bytes(), 0644)
+		err := ioutil.WriteFile(fmt.Sprintf("%s/q%d/bgp.conf", outputDir, i), q.Config().Bytes(), 0644)
 		if err != nil {
 			log.Fatal(err)
 		}
