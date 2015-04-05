@@ -93,13 +93,13 @@ case "$1" in
         sudo docker pull yoshima/bagpipe-bgp
         sudo docker pull osrg/gobgp
 	sudo mkdir /usr/local/gobgp
-	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp go run /root/gobgp/tools/bagpipedockertest/bagpipe-bgp-config.go -c /mnt
+	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp /bin/bash
+	go run bagpipe-bgp-config.go -c /usr/local/gobgp
 	;;
     *)
 	echo $1
 	echo "Usage: root-server-docker {start|stop|install}"
 	exit 2
 	;;
-esac
 
 
