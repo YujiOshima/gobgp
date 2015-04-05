@@ -45,7 +45,7 @@ func (qt *BagpipebgpConfig) Config() *bytes.Buffer {
 }
 
 func create_config_files(nr int, outputDir string) {
-	BagpipebgpConfigList := make([]*BagpipebgpConfig, 0)
+	bagpipebgpConfigList := make([]*BagpipebgpConfig, 0)
 
 	gobgpConf := config.Bgp{
 		Global: config.Global{

@@ -101,5 +101,5 @@ case "$1" in
 	echo "Usage: root-server-docker {start|stop|install}"
 	exit 2
 	;;
-
+esac
 
