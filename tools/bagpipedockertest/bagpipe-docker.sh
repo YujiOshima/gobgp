@@ -15,7 +15,7 @@ check_user() {
 
 run_bagpipebgp() {
     local docker_name=q$1
-    docker run --privileged=true -v $CONFIG_DIR/$docker_name:/etc/bagpipe-bgp --name $docker_name -id yoshima/bagpipebgp
+    docker run --privileged=true -v $CONFIG_DIR/$docker_name:/etc/bagpipe-bgp --name $docker_name -id yoshima/bagpipe-bgp
     sudo pipework $BRIDGE_NAME $docker_name 10.0.0.$1/16
 }
 
@@ -90,10 +90,10 @@ case "$1" in
         sudo apt-get install -y --force-yes lv
 	sudo wget https://raw.github.com/jpetazzo/pipework/master/pipework -O /usr/local/bin/pipework
 	sudo chmod 755 /usr/local/bin/pipework
-        sudo docker pull yoshima/bagpipebgp
+        sudo docker pull yoshima/bagpipe-bgp
         sudo docker pull osrg/gobgp
 	sudo mkdir /usr/local/gobgp
-	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp go run /root/gobgp/tools/route-server/bagpipebgp-rsconfig.go -c /mnt
+	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp go run /root/gobgp/tools/bagpipedockertest/bagpipe-bgp-config.go -c /mnt
 	;;
     *)
 	echo $1
