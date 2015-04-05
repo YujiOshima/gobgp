@@ -108,7 +108,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 		// NEXTHOP handling
 		switch pd.routeFamily {
 		case bgp.RF_IPv4_UC:
-			idx, _ := pd.getPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP)
+			idx, _ := pd.GetPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP)
 			if idx < 0 {
 				log.Warn("missing NEXTHOP mandatory attribute, check MP_REACH_NLRI instead.")
 			} else {
@@ -118,7 +118,7 @@ func (pd *PathDefault) updatePathAttrs(global *config.Global, peer *config.Neigh
 			}
 			fallthrough
 		default:
-			idx, attr := pd.getPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
+			idx, attr := pd.GetPathAttr(bgp.BGP_ATTR_TYPE_MP_REACH_NLRI)
 			if attr == nil {
 				log.Fatal("missing MP_REACH_NLRI mandatory attribute")
 			}
