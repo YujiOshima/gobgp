@@ -18,7 +18,7 @@ run_bagpipebgp() {
     docker run --privileged=true -v $CONFIG_DIR/$docker_name:/etc/bagpipe-bgp --name $docker_name -id yoshima/bagpipe-bgp
     sudo pipework $BRIDGE_NAME $docker_name 10.0.0.$1/16
     docker exec $docker_name service bagpipe-bgp restart
-    docker exec bagpipe-rest-attach --attach --port tap42 --mac de:ad:00:00:be:e$1 --ip 11.11.11.$1 --gateway-ip 11.11.11.254 --network-type ipvpn --rt 65000:77
+    docker exec $docker_name bagpipe-rest-attach --attach --port tap42 --mac de:ad:00:00:be:e$1 --ip 11.11.11.$1 --gateway-ip 11.11.11.254 --network-type evpn --rt 65000:77
 }
 
 stop_bagpipebgp() {
@@ -96,7 +96,7 @@ case "$1" in
         sudo docker pull osrg/gobgp
 	sudo mkdir /usr/local/gobgp
 	sudo docker run --privileged=true -v /usr/local/gobgp:/mnt --name gobgp --rm osrg/gobgp /bin/bash
-	go run bagpipe-bgp-config.go -c /usr/local/gobgp
+	sudo -E go run bagpipe-bgp-config.go -c /usr/local/gobgp
 	;;
     *)
 	echo $1

@@ -33,12 +33,14 @@ func (qt *BagpipebgpConfig) Config() *bytes.Buffer {
 	buf := bytes.NewBuffer(nil)
 
 	buf.WriteString("[BGP]\n")
-	buf.WriteString(fmt.Sprintf("local_address=192.168.0.%d\n", qt.id))
-	buf.WriteString(fmt.Sprintf("peers=%s\n", qt.serverIP, qt.gobgpConfig.As))
-	buf.WriteString(fmt.Sprintf("my_as=%d\n", qt.gobgpConfig.As))
+	buf.WriteString(fmt.Sprintf("local_address=10.0.0.%d\n", qt.id))
+	buf.WriteString(fmt.Sprintf("peers=%s\n", qt.serverIP))
+	buf.WriteString(fmt.Sprintf("my_as=%d\n", int(qt.gobgpConfig.As)))
 	buf.WriteString("[API]\n")
 	buf.WriteString("api_host=localhost \n")
 	buf.WriteString("api_port=8082\n")
+	buf.WriteString("[DATAPLANE_DRIVER_IPVPN]\n")
+	buf.WriteString("dataplane_driver = bagpipe.bgp.vpn.ipvpn.DummyDataplaneDriver\n")
 	buf.WriteString("[DATAPLANE_DRIVER_EVPN]\n")
 	buf.WriteString("dataplane_driver = DummyDataplaneDriver\n")
 	return buf
@@ -56,9 +58,23 @@ func create_config_files(nr int, outputDir string) {
 
 	for i := 1; i < nr+1; i++ {
 		c := config.Neighbor{
-			PeerAs:          65000 + uint32(i),
+			PeerAs:          65000,
 			NeighborAddress: net.ParseIP(fmt.Sprintf("10.0.0.%d", i)),
-			AuthPassword:    fmt.Sprintf("hoge%d", i),
+			AfiSafiList: []config.AfiSafi{
+				config.AfiSafi{
+					AfiSafiName: "ipv4-unicast",
+				},
+				config.AfiSafi{
+					AfiSafiName: "l2vpn-evpn",
+					L2vpnEvpn:   config.L2vpnEvpn{},
+				},
+			},
+			Timers: config.Timers{
+				ConnectRetry:      100,
+				HoldTime:          180,
+				KeepaliveInterval: 10,
+			},
+
 		}
 		gobgpConf.NeighborList = append(gobgpConf.NeighborList, c)
 		q := NewBagpipebgpConfig(i, &gobgpConf.Global, &c, net.ParseIP("10.0.255.1"))
