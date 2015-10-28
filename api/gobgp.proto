@@ -186,7 +186,7 @@ message AddPathsState {
 }
 
 message AfiSafis {
-  repeated AfiSafi afiSafi = 1;
+  repeated AfiSafi afisafi = 1;
 }
 
 message AfiSafi {
@@ -204,10 +204,9 @@ message AfiSafi {
   L3VpnIpv4Unicast l3_vpn_ipv4_unicast = 12;
   L3VpnIpv6Multicast l3_vpn_ipv6_multicast = 13;
   L3VpnIpv6Unicast l3_vpn_ipv6_unicast = 14;
-  AfiSafiState state = 15;
-  UseMultiplePaths use_multiple_paths = 16;
-  bool active = 17;
-  Prefixes prefixes = 18;
+  UseMultiplePaths use_multiple_paths = 15;
+  bool active = 16;
+  Prefixes prefixes = 17;
  }
 
 message ApplyPolicy {
@@ -403,13 +402,25 @@ message Queues {
 }
 
 message Timers {
-uint64 connect_retry = 1;
-uint64 hold_time = 2;
-uint64 keepalive_interval = 3;
-uint64 minimum_advertisement_interval = 4;
-uint64 negotiated_hold_time = 5;
-uint64 uptime = 6;
-uint64 downtime = 7;
+ TimersConfig config =1;
+ TimersState state=2;
+}
+
+message TimersConfig{
+   uint64 connectRetry = 1;
+   uint64 holdTime = 2;
+   uint64 keepaliveInterval = 3;
+   uint64 minimumAdvertisementInterval = 4;
+}
+
+message TimersState{
+   uint64 connectRetry = 1;
+   uint64 holdTime = 2;
+   uint64 keepaliveInterval = 3;
+   uint64 minimumAdvertisementInterval = 4;
+   uint64 negotiatedHoldTime = 5;
+   uint64 uptime = 6;
+   uint64 downtime = 7;
 }
 
 message Transport {

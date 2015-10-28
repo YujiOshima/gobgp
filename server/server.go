@@ -1686,12 +1686,12 @@ func (server *BgpServer) handleGrpcModNeighbor(grpcReq *GrpcRequest) (sMsgs []*S
 				apitoRFlist := func(l []*api.AfiSafi) []bgp.RouteFamily {
 					rfList := []bgp.RouteFamily{}
 					for _, rf := range l {
-						k, _ := bgp.GetRouteFamily(rf.AfiSafiName)
+						k, _ := bgp.GetRouteFamily(rf.Name)
 						rfList = append(rfList, k)
 					}
 					return rfList
 				}
-				loc = table.NewTableManager(addr, apitoRFlist(arg.Peer.AfiSafis.AfiSafi), server.bgpConfig.Global.MplsLabelRange.MinLabel, server.bgpConfig.Global.MplsLabelRange.MaxLabel)
+				loc = table.NewTableManager(addr, apitoRFlist(arg.Peer.Afisafis.Afisafi), server.bgpConfig.Global.MplsLabelRange.MinLabel, server.bgpConfig.Global.MplsLabelRange.MaxLabel)
 			} else {
 				loc = server.globalRib
 			}
@@ -1730,10 +1730,8 @@ func (server *BgpServer) handleGrpcModNeighbor(grpcReq *GrpcRequest) (sMsgs []*S
 				pconf.Timers.TimersConfig.KeepaliveInterval = float64(config.DEFAULT_HOLDTIME / 3)
 			}
 			if a.RouteReflector != nil {
-				if a.RouteReflector.Config != nil {
-					pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClusterId = config.RrClusterIdType(a.RouteReflector.Config.RouteReflectorClusterId)
-					pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClient = a.RouteReflector.Config.RouteReflectorClient
-				}
+				pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClusterId = config.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
+				pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
 			}
 			if a.RouteServer != nil {
 				pconf.RouteServer.RouteServerConfig.RouteServerClient = a.RouteServer.RouteServerClient
