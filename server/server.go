@@ -1735,6 +1735,66 @@ func (server *BgpServer) handleGrpcModNeighbor(grpcReq *GrpcRequest) (sMsgs []*S
 		}
 		return l
 	}
+	apitoConfig := func(a *api.Peer) config.Neighbor {
+		var pconf config.Neighbor
+		if a.Conf != nil {
+			pconf.NeighborAddress = net.ParseIP(a.Conf.NeighborAddress)
+			pconf.NeighborConfig.PeerAs = a.Conf.PeerAs
+			pconf.NeighborConfig.LocalAs = a.Conf.LocalAs
+			if pconf.NeighborConfig.PeerAs != server.bgpConfig.Global.GlobalConfig.As {
+				pconf.NeighborConfig.PeerType = config.PEER_TYPE_EXTERNAL
+			} else {
+				pconf.NeighborConfig.PeerType = config.PEER_TYPE_INTERNAL
+			}
+			pconf.NeighborConfig.AuthPassword = a.Conf.AuthPassword
+			pconf.NeighborConfig.RemovePrivateAs = config.RemovePrivateAsOption(a.Conf.RemovePrivateAs)
+			pconf.NeighborConfig.RouteFlapDamping = a.Conf.RouteFlapDamping
+			pconf.NeighborConfig.SendCommunity = config.CommunityType(a.Conf.SendCommunity)
+			pconf.NeighborConfig.Description = a.Conf.Description
+			pconf.NeighborConfig.PeerGroup = a.Conf.PeerGroup
+			pconf.NeighborConfig.NeighborAddress = net.ParseIP(a.Conf.NeighborAddress)
+		}
+		if a.Timers != nil {
+			if a.Timers.Config != nil {
+				pconf.Timers.TimersConfig.ConnectRetry = float64(a.Timers.Config.ConnectRetry)
+				pconf.Timers.TimersConfig.HoldTime = float64(a.Timers.Config.HoldTime)
+				pconf.Timers.TimersConfig.KeepaliveInterval = float64(a.Timers.Config.KeepaliveInterval)
+				pconf.Timers.TimersConfig.MinimumAdvertisementInterval = float64(a.Timers.Config.MinimumAdvertisementInterval)
+			}
+		} else {
+			pconf.Timers.TimersConfig.ConnectRetry = float64(config.DEFAULT_CONNECT_RETRY)
+			pconf.Timers.TimersConfig.HoldTime = float64(config.DEFAULT_HOLDTIME)
+			pconf.Timers.TimersConfig.KeepaliveInterval = float64(config.DEFAULT_HOLDTIME / 3)
+		}
+		if a.RouteReflector != nil {
+			pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClusterId = config.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
+			pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
+		}
+		if a.RouteServer != nil {
+			pconf.RouteServer.RouteServerConfig.RouteServerClient = a.RouteServer.RouteServerClient
+		}
+		if a.ApplyPolicy != nil {
+			if a.ApplyPolicy.ImportPolicy != nil {
+				pconf.ApplyPolicy.ApplyPolicyConfig.DefaultImportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ImportPolicy.Default)
+				for _, p := range a.ApplyPolicy.ImportPolicy.Policies {
+					pconf.ApplyPolicy.ApplyPolicyConfig.ImportPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.ImportPolicy, p.Name)
+				}
+			}
+			if a.ApplyPolicy.ExportPolicy != nil {
+				pconf.ApplyPolicy.ApplyPolicyConfig.DefaultExportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ExportPolicy.Default)
+				for _, p := range a.ApplyPolicy.ExportPolicy.Policies {
+					pconf.ApplyPolicy.ApplyPolicyConfig.ExportPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.ExportPolicy, p.Name)
+				}
+			}
+			if a.ApplyPolicy.InPolicy != nil {
+				pconf.ApplyPolicy.ApplyPolicyConfig.DefaultInPolicy = config.DefaultPolicyType(a.ApplyPolicy.InPolicy.Default)
+				for _, p := range a.ApplyPolicy.InPolicy.Policies {
+					pconf.ApplyPolicy.ApplyPolicyConfig.InPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.InPolicy, p.Name)
+				}
+			}
+		}
+		return pconf
+	}
 
 	switch arg.Operation {
 	case api.Operation_ADD:
@@ -1761,66 +1821,6 @@ func (server *BgpServer) handleGrpcModNeighbor(grpcReq *GrpcRequest) (sMsgs []*S
 			}
 		} else {
 			loc = server.globalRib
-		}
-		apitoConfig := func(a *api.Peer) config.Neighbor {
-			var pconf config.Neighbor
-			if a.Conf != nil {
-				pconf.NeighborAddress = net.ParseIP(a.Conf.NeighborAddress)
-				pconf.NeighborConfig.PeerAs = a.Conf.PeerAs
-				pconf.NeighborConfig.LocalAs = a.Conf.LocalAs
-				if pconf.NeighborConfig.PeerAs != server.bgpConfig.Global.GlobalConfig.As {
-					pconf.NeighborConfig.PeerType = config.PEER_TYPE_EXTERNAL
-				} else {
-					pconf.NeighborConfig.PeerType = config.PEER_TYPE_INTERNAL
-				}
-				pconf.NeighborConfig.AuthPassword = a.Conf.AuthPassword
-				pconf.NeighborConfig.RemovePrivateAs = config.RemovePrivateAsOption(a.Conf.RemovePrivateAs)
-				pconf.NeighborConfig.RouteFlapDamping = a.Conf.RouteFlapDamping
-				pconf.NeighborConfig.SendCommunity = config.CommunityType(a.Conf.SendCommunity)
-				pconf.NeighborConfig.Description = a.Conf.Description
-				pconf.NeighborConfig.PeerGroup = a.Conf.PeerGroup
-				pconf.NeighborConfig.NeighborAddress = net.ParseIP(a.Conf.NeighborAddress)
-			}
-			if a.Timers != nil {
-				if a.Timers.Config != nil {
-					pconf.Timers.TimersConfig.ConnectRetry = float64(a.Timers.Config.ConnectRetry)
-					pconf.Timers.TimersConfig.HoldTime = float64(a.Timers.Config.HoldTime)
-					pconf.Timers.TimersConfig.KeepaliveInterval = float64(a.Timers.Config.KeepaliveInterval)
-					pconf.Timers.TimersConfig.MinimumAdvertisementInterval = float64(a.Timers.Config.MinimumAdvertisementInterval)
-				}
-			} else {
-				pconf.Timers.TimersConfig.ConnectRetry = float64(config.DEFAULT_CONNECT_RETRY)
-				pconf.Timers.TimersConfig.HoldTime = float64(config.DEFAULT_HOLDTIME)
-				pconf.Timers.TimersConfig.KeepaliveInterval = float64(config.DEFAULT_HOLDTIME / 3)
-			}
-			if a.RouteReflector != nil {
-				pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClusterId = config.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
-				pconf.RouteReflector.RouteReflectorConfig.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
-			}
-			if a.RouteServer != nil {
-				pconf.RouteServer.RouteServerConfig.RouteServerClient = a.RouteServer.RouteServerClient
-			}
-			if a.ApplyPolicy != nil {
-				if a.ApplyPolicy.ImportPolicy != nil {
-					pconf.ApplyPolicy.ApplyPolicyConfig.DefaultImportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ImportPolicy.Default)
-					for _, p := range a.ApplyPolicy.ImportPolicy.Policies {
-						pconf.ApplyPolicy.ApplyPolicyConfig.ImportPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.ImportPolicy, p.Name)
-					}
-				}
-				if a.ApplyPolicy.ExportPolicy != nil {
-					pconf.ApplyPolicy.ApplyPolicyConfig.DefaultExportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ExportPolicy.Default)
-					for _, p := range a.ApplyPolicy.ExportPolicy.Policies {
-						pconf.ApplyPolicy.ApplyPolicyConfig.ExportPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.ExportPolicy, p.Name)
-					}
-				}
-				if a.ApplyPolicy.InPolicy != nil {
-					pconf.ApplyPolicy.ApplyPolicyConfig.DefaultInPolicy = config.DefaultPolicyType(a.ApplyPolicy.InPolicy.Default)
-					for _, p := range a.ApplyPolicy.InPolicy.Policies {
-						pconf.ApplyPolicy.ApplyPolicyConfig.InPolicy = append(pconf.ApplyPolicy.ApplyPolicyConfig.InPolicy, p.Name)
-					}
-				}
-			}
-			return pconf
 		}
 		configneigh := apitoConfig(arg.Peer)
 		peer := NewPeer(server.bgpConfig.Global, configneigh, loc)
@@ -1859,6 +1859,12 @@ func (server *BgpServer) handleGrpcModNeighbor(grpcReq *GrpcRequest) (sMsgs []*S
 			sMsgs = append(sMsgs, m...)
 		}
 		delete(server.neighborMap, addr)
+	case api.Operation_REPLACE:
+		peer := server.neighborMap[addr]
+		configneigh := apitoConfig(arg.Peer)
+		peer.conf = configneigh
+		server.setPolicyByConfig(peer, configneigh)
+
 	}
 	return sMsgs, err
 }
