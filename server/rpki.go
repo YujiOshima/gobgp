@@ -25,7 +25,6 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/armon/go-radix"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/packet/rtr"
@@ -77,21 +76,21 @@ func (r *ROA) Equal(roa *ROA) bool {
 	return false
 }
 
-func (r *ROA) toApiStruct() *api.Roa {
+func (r *ROA) toApiStruct() *Roa {
 	host, port, _ := net.SplitHostPort(r.Src)
-	return &api.Roa{
+	return &Roa{
 		As:        r.AS,
 		Maxlen:    uint32(r.MaxLen),
 		Prefixlen: uint32(r.Prefix.Length),
 		Prefix:    r.Prefix.Prefix.String(),
-		Conf: &api.RPKIConf{
+		Conf: &RPKIConf{
 			Address:    host,
 			RemotePort: port,
 		},
 	}
 }
 
-type roas []*api.Roa
+type roas []*Roa
 
 func (r roas) Len() int {
 	return len(r)
@@ -436,117 +435,114 @@ func (c *roaManager) handleRTRMsg(client *roaClient, state *config.RpkiServerSta
 		log.Info("failed to parse a RTR message ", client.host, err)
 	}
 }
+func (c *roaManager) GetRpki(req *Request) *Response {
 
-func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
-	switch grpcReq.RequestType {
-	case REQ_GET_RPKI:
-		f := func(tree *radix.Tree) (map[string]uint32, map[string]uint32) {
-			records := make(map[string]uint32)
-			prefixes := make(map[string]uint32)
+	f := func(tree *radix.Tree) (map[string]uint32, map[string]uint32) {
+		records := make(map[string]uint32)
+		prefixes := make(map[string]uint32)
 
+		tree.Walk(func(s string, v interface{}) bool {
+			b, _ := v.(*roaBucket)
+			tmpRecords := make(map[string]uint32)
+			for _, roa := range b.entries {
+				tmpRecords[roa.Src]++
+			}
+
+			for src, r := range tmpRecords {
+				if r > 0 {
+					records[src] += r
+					prefixes[src]++
+				}
+			}
+			return false
+		})
+		return records, prefixes
+	}
+
+	recordsV4, prefixesV4 := f(c.Roas[bgp.RF_IPv4_UC])
+	recordsV6, prefixesV6 := f(c.Roas[bgp.RF_IPv6_UC])
+
+	l := make([]*Rpki, 0, len(c.clientMap))
+	for _, client := range c.clientMap {
+		state := client.state
+		addr, port, _ := net.SplitHostPort(client.host)
+		received := &state.RpkiMessages.RpkiReceived
+		sent := client.state.RpkiMessages.RpkiSent
+		up := true
+		if client.conn == nil {
+			up = false
+		}
+
+		f := func(m map[string]uint32, key string) uint32 {
+			if r, ok := m[key]; ok {
+				return r
+			}
+			return 0
+		}
+
+		rpki := &Rpki{
+			Conf: &RPKIConf{
+				Address:    addr,
+				RemotePort: port,
+			},
+			State: &RPKIState{
+				Uptime:        state.Uptime,
+				Downtime:      state.Downtime,
+				Up:            up,
+				RecordIpv4:    f(recordsV4, client.host),
+				RecordIpv6:    f(recordsV6, client.host),
+				PrefixIpv4:    f(prefixesV4, client.host),
+				PrefixIpv6:    f(prefixesV6, client.host),
+				Serial:        client.serialNumber,
+				ReceivedIpv4:  received.Ipv4Prefix,
+				ReceivedIpv6:  received.Ipv6Prefix,
+				SerialNotify:  received.SerialNotify,
+				CacheReset:    received.CacheReset,
+				CacheResponse: received.CacheResponse,
+				EndOfData:     received.EndOfData,
+				Error:         received.Error,
+				SerialQuery:   sent.SerialQuery,
+				ResetQuery:    sent.ResetQuery,
+			},
+		}
+		l = append(l, rpki)
+	}
+	return &Response{Data: &GetRpkiResponse{Servers: l}}
+}
+func (c *roaManager) GetRoa(req *Request) *Response {
+	if len(c.clientMap) == 0 {
+		return &Response{
+			ResponseErr: fmt.Errorf("RPKI server isn't configured."),
+			Data:        &GetRoaResponse{},
+		}
+	}
+	var rfList []bgp.RouteFamily
+	switch grpcReq.RouteFamily {
+	case bgp.RF_IPv4_UC:
+		rfList = []bgp.RouteFamily{bgp.RF_IPv4_UC}
+	case bgp.RF_IPv6_UC:
+		rfList = []bgp.RouteFamily{bgp.RF_IPv6_UC}
+	default:
+		rfList = []bgp.RouteFamily{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC}
+	}
+	l := make([]*Roa, 0)
+	for _, rf := range rfList {
+		if tree, ok := c.Roas[rf]; ok {
 			tree.Walk(func(s string, v interface{}) bool {
 				b, _ := v.(*roaBucket)
-				tmpRecords := make(map[string]uint32)
-				for _, roa := range b.entries {
-					tmpRecords[roa.Src]++
+				var roaList roas
+				for _, r := range b.entries {
+					roaList = append(roaList, r.toApiStruct())
 				}
-
-				for src, r := range tmpRecords {
-					if r > 0 {
-						records[src] += r
-						prefixes[src]++
-					}
+				sort.Sort(roaList)
+				for _, roa := range roaList {
+					l = append(l, roa)
 				}
 				return false
 			})
-			return records, prefixes
 		}
-
-		recordsV4, prefixesV4 := f(c.Roas[bgp.RF_IPv4_UC])
-		recordsV6, prefixesV6 := f(c.Roas[bgp.RF_IPv6_UC])
-
-		l := make([]*api.Rpki, 0, len(c.clientMap))
-		for _, client := range c.clientMap {
-			state := client.state
-			addr, port, _ := net.SplitHostPort(client.host)
-			received := &state.RpkiMessages.RpkiReceived
-			sent := client.state.RpkiMessages.RpkiSent
-			up := true
-			if client.conn == nil {
-				up = false
-			}
-
-			f := func(m map[string]uint32, key string) uint32 {
-				if r, ok := m[key]; ok {
-					return r
-				}
-				return 0
-			}
-
-			rpki := &api.Rpki{
-				Conf: &api.RPKIConf{
-					Address:    addr,
-					RemotePort: port,
-				},
-				State: &api.RPKIState{
-					Uptime:        state.Uptime,
-					Downtime:      state.Downtime,
-					Up:            up,
-					RecordIpv4:    f(recordsV4, client.host),
-					RecordIpv6:    f(recordsV6, client.host),
-					PrefixIpv4:    f(prefixesV4, client.host),
-					PrefixIpv6:    f(prefixesV6, client.host),
-					Serial:        client.serialNumber,
-					ReceivedIpv4:  received.Ipv4Prefix,
-					ReceivedIpv6:  received.Ipv6Prefix,
-					SerialNotify:  received.SerialNotify,
-					CacheReset:    received.CacheReset,
-					CacheResponse: received.CacheResponse,
-					EndOfData:     received.EndOfData,
-					Error:         received.Error,
-					SerialQuery:   sent.SerialQuery,
-					ResetQuery:    sent.ResetQuery,
-				},
-			}
-			l = append(l, rpki)
-		}
-		return &GrpcResponse{Data: &api.GetRpkiResponse{Servers: l}}
-	case REQ_ROA:
-		if len(c.clientMap) == 0 {
-			return &GrpcResponse{
-				ResponseErr: fmt.Errorf("RPKI server isn't configured."),
-				Data:        &api.GetRoaResponse{},
-			}
-		}
-		var rfList []bgp.RouteFamily
-		switch grpcReq.RouteFamily {
-		case bgp.RF_IPv4_UC:
-			rfList = []bgp.RouteFamily{bgp.RF_IPv4_UC}
-		case bgp.RF_IPv6_UC:
-			rfList = []bgp.RouteFamily{bgp.RF_IPv6_UC}
-		default:
-			rfList = []bgp.RouteFamily{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC}
-		}
-		l := make([]*api.Roa, 0)
-		for _, rf := range rfList {
-			if tree, ok := c.Roas[rf]; ok {
-				tree.Walk(func(s string, v interface{}) bool {
-					b, _ := v.(*roaBucket)
-					var roaList roas
-					for _, r := range b.entries {
-						roaList = append(roaList, r.toApiStruct())
-					}
-					sort.Sort(roaList)
-					for _, roa := range roaList {
-						l = append(l, roa)
-					}
-					return false
-				})
-			}
-		}
-		return &GrpcResponse{Data: &api.GetRoaResponse{Roas: l}}
 	}
-	return nil
+	return &Response{Data: &GetRoaResponse{Roas: l}}
 }
 
 func validatePath(ownAs uint32, tree *radix.Tree, cidr string, asPath *bgp.PathAttributeAsPath) config.RpkiValidationResultType {

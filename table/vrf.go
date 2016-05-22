@@ -16,7 +16,6 @@
 package table
 
 import (
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/packet/bgp"
 )
 
@@ -26,24 +25,6 @@ type Vrf struct {
 	ImportRt []bgp.ExtendedCommunityInterface
 	ExportRt []bgp.ExtendedCommunityInterface
 	LabelMap map[string]uint32
-}
-
-func (v *Vrf) ToApiStruct() *api.Vrf {
-	f := func(rts []bgp.ExtendedCommunityInterface) [][]byte {
-		ret := make([][]byte, 0, len(rts))
-		for _, rt := range rts {
-			b, _ := rt.Serialize()
-			ret = append(ret, b)
-		}
-		return ret
-	}
-	rd, _ := v.Rd.Serialize()
-	return &api.Vrf{
-		Name:     v.Name,
-		Rd:       rd,
-		ImportRt: f(v.ImportRt),
-		ExportRt: f(v.ExportRt),
-	}
 }
 
 func isLastTargetUser(vrfs map[string]*Vrf, target bgp.ExtendedCommunityInterface) bool {

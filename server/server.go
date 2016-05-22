@@ -27,7 +27,6 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/armon/go-radix"
 	"github.com/eapache/channels"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/packet/bmp"
@@ -48,8 +47,8 @@ type broadcastMsg interface {
 }
 
 type broadcastGrpcMsg struct {
-	req    *GrpcRequest
-	result *GrpcResponse
+	req    *Request
+	result *Response
 	done   bool
 }
 
@@ -147,9 +146,9 @@ type BgpServer struct {
 	acceptCh      chan *net.TCPConn
 	zapiMsgCh     chan *zebra.Message
 
-	GrpcReqCh     chan *GrpcRequest
+	GrpcReqCh     chan *Request
 	policy        *table.RoutingPolicy
-	broadcastReqs []*GrpcRequest
+	broadcastReqs []*Request
 	broadcastMsgs []broadcastMsg
 	listeners     []*TCPListener
 	neighborMap   map[string]*Peer
@@ -163,7 +162,7 @@ type BgpServer struct {
 func NewBgpServer() *BgpServer {
 	roaManager, _ := NewROAManager(0)
 	return &BgpServer{
-		GrpcReqCh:   make(chan *GrpcRequest, 1),
+		MsgCh:       make(chan []*SenderMsg, 1),
 		neighborMap: make(map[string]*Peer),
 		watchers:    Watchers(make(map[watcherType]watcher)),
 		policy:      table.NewRoutingPolicy(),
@@ -302,10 +301,9 @@ func (server *BgpServer) Serve() {
 		}
 
 		select {
-		case grpcReq := <-server.GrpcReqCh:
-			m := server.handleGrpc(grpcReq)
-			if len(m) > 0 {
-				senderMsgs = append(senderMsgs, m...)
+		case msg := <-server.MsgCh:
+			if len(msg) > 0 {
+				senderMsgs = append(senderMsgs, msg...)
 			}
 		case conn := <-server.acceptCh:
 			passConn(conn)
@@ -343,10 +341,9 @@ func (server *BgpServer) Serve() {
 			senderMsgs = senderMsgs[1:]
 		case bCh <- firstBroadcastMsg:
 			server.broadcastMsgs = server.broadcastMsgs[1:]
-		case grpcReq := <-server.GrpcReqCh:
-			m := server.handleGrpc(grpcReq)
-			if len(m) > 0 {
-				senderMsgs = append(senderMsgs, m...)
+		case msg := <-server.MsgCh:
+			if len(msg) > 0 {
+				senderMsgs = append(senderMsgs, msg...)
 			}
 		}
 	}
@@ -517,13 +514,13 @@ func (server *BgpServer) broadcastBests(bests []*table.Path) {
 
 		rf := path.GetRouteFamily()
 
-		result := &GrpcResponse{
-			Data: &api.Destination{
+		result := &Response{
+			Data: &Destination{
 				Prefix: path.GetNlri().String(),
-				Paths:  []*api.Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
+				Paths:  []*Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
 			},
 		}
-		remainReqs := make([]*GrpcRequest, 0, len(server.broadcastReqs))
+		remainReqs := make([]*Request, 0, len(server.broadcastReqs))
 		for _, req := range server.broadcastReqs {
 			select {
 			case <-req.EndCh:
@@ -548,10 +545,10 @@ func (server *BgpServer) broadcastBests(bests []*table.Path) {
 }
 
 func (server *BgpServer) broadcastPeerState(peer *Peer, oldState bgp.FSMState) {
-	result := &GrpcResponse{
-		Data: peer.ToApiStruct(),
+	result := &Response{
+		Data: peer,
 	}
-	remainReqs := make([]*GrpcRequest, 0, len(server.broadcastReqs))
+	remainReqs := make([]*Request, 0, len(server.broadcastReqs))
 	for _, req := range server.broadcastReqs {
 		select {
 		case <-req.EndCh:
@@ -758,7 +755,7 @@ func (server *BgpServer) handleFSMMessage(peer *Peer, e *FsmMsg) []*SenderMsg {
 			peer.fsm.pConf.Transport.State.LocalAddress = laddr
 			deferralExpiredFunc := func(family bgp.RouteFamily) func() {
 				return func() {
-					req := NewGrpcRequest(REQ_DEFERRAL_TIMER_EXPIRED, peer.ID(), family, nil)
+					req := NewRequest(REQ_DEFERRAL_TIMER_EXPIRED, peer.ID(), family, nil)
 					server.GrpcReqCh <- req
 					<-req.ResponseCh
 				}
@@ -981,8 +978,8 @@ func (server *BgpServer) handleFSMMessage(peer *Peer, e *FsmMsg) []*SenderMsg {
 }
 
 func (server *BgpServer) SetGlobalType(g config.Global) error {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_START_SERVER,
 		Data:        &g,
 		ResponseCh:  ch,
@@ -997,8 +994,8 @@ func (server *BgpServer) SetZebraConfig(z config.Zebra) error {
 	if !z.Config.Enabled {
 		return nil
 	}
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_INITIALIZE_ZEBRA,
 		Data:        &z.Config,
 		ResponseCh:  ch,
@@ -1010,8 +1007,8 @@ func (server *BgpServer) SetZebraConfig(z config.Zebra) error {
 }
 
 func (server *BgpServer) SetRpkiConfig(c []config.RpkiServer) error {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_INITIALIZE_RPKI,
 		Data:        &server.bgpConfig.Global,
 		ResponseCh:  ch,
@@ -1021,10 +1018,10 @@ func (server *BgpServer) SetRpkiConfig(c []config.RpkiServer) error {
 	}
 
 	for _, s := range c {
-		ch := make(chan *GrpcResponse)
-		server.GrpcReqCh <- &GrpcRequest{
+		ch := make(chan *Response)
+		server.GrpcReqCh <- &Request{
 			RequestType: REQ_ADD_RPKI,
-			Data: &api.AddRpkiRequest{
+			Data: &AddRpkiRequest{
 				Address:  s.Config.Address,
 				Port:     s.Config.Port,
 				Lifetime: s.Config.RecordLifetime,
@@ -1040,8 +1037,8 @@ func (server *BgpServer) SetRpkiConfig(c []config.RpkiServer) error {
 
 func (server *BgpServer) SetBmpConfig(c []config.BmpServer) error {
 	for _, s := range c {
-		ch := make(chan *GrpcResponse)
-		server.GrpcReqCh <- &GrpcRequest{
+		ch := make(chan *Response)
+		server.GrpcReqCh <- &Request{
 			RequestType: REQ_ADD_BMP,
 			Data:        &s.Config,
 			ResponseCh:  ch,
@@ -1056,10 +1053,10 @@ func (server *BgpServer) SetBmpConfig(c []config.BmpServer) error {
 func (server *BgpServer) SetMrtConfig(c []config.Mrt) error {
 	for _, s := range c {
 		if s.FileName != "" {
-			ch := make(chan *GrpcResponse)
-			server.GrpcReqCh <- &GrpcRequest{
+			ch := make(chan *Response)
+			server.GrpcReqCh <- &Request{
 				RequestType: REQ_ENABLE_MRT,
-				Data: &api.EnableMrtRequest{
+				Data: &EnableMrtRequest{
 					DumpType: int32(s.DumpType.ToInt()),
 					Filename: s.FileName,
 					Interval: s.Interval,
@@ -1075,8 +1072,8 @@ func (server *BgpServer) SetMrtConfig(c []config.Mrt) error {
 }
 
 func (server *BgpServer) PeerAdd(peer config.Neighbor) error {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_ADD_NEIGHBOR,
 		Data:        &peer,
 		ResponseCh:  ch,
@@ -1085,8 +1082,8 @@ func (server *BgpServer) PeerAdd(peer config.Neighbor) error {
 }
 
 func (server *BgpServer) PeerDelete(peer config.Neighbor) error {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_DEL_NEIGHBOR,
 		Data:        &peer,
 		ResponseCh:  ch,
@@ -1095,8 +1092,8 @@ func (server *BgpServer) PeerDelete(peer config.Neighbor) error {
 }
 
 func (server *BgpServer) PeerUpdate(peer config.Neighbor) (bool, error) {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_UPDATE_NEIGHBOR,
 		Data:        &peer,
 		ResponseCh:  ch,
@@ -1114,8 +1111,8 @@ func (server *BgpServer) Shutdown() {
 }
 
 func (server *BgpServer) UpdatePolicy(policy config.RoutingPolicy) {
-	ch := make(chan *GrpcResponse)
-	server.GrpcReqCh <- &GrpcRequest{
+	ch := make(chan *Response)
+	server.GrpcReqCh <- &Request{
 		RequestType: REQ_RELOAD_POLICY,
 		Data:        policy,
 		ResponseCh:  ch,
@@ -1166,14 +1163,14 @@ func (server *BgpServer) handlePolicy(pl config.RoutingPolicy) error {
 	return nil
 }
 
-func (server *BgpServer) checkNeighborRequest(grpcReq *GrpcRequest) (*Peer, error) {
-	remoteAddr := grpcReq.Name
+func (server *BgpServer) checkNeighborRequest(req *Request) (*Peer, error) {
+	remoteAddr := req.Name
 	peer, found := server.neighborMap[remoteAddr]
 	if !found {
-		result := &GrpcResponse{}
+		result := &Response{}
 		result.ResponseErr = fmt.Errorf("Neighbor that has %v doesn't exist.", remoteAddr)
-		grpcReq.ResponseCh <- result
-		close(grpcReq.ResponseCh)
+		req.ResponseCh <- result
+		close(req.ResponseCh)
 		return nil, result.ResponseErr
 	}
 	return peer, nil
@@ -1250,7 +1247,7 @@ func getMacMobilityExtendedCommunity(etag uint32, mac net.HardwareAddr, evpnPath
 	return nil
 }
 
-func (server *BgpServer) Api2PathList(resource api.Resource, name string, ApiPathList []*api.Path) ([]*table.Path, error) {
+func (server *BgpServer) Api2PathList(resource Resource, name string, ApiPathList []*Path) ([]*table.Path, error) {
 	var nlri bgp.AddrPrefixInterface
 	var nexthop string
 	var pi *table.PeerInfo
@@ -1325,7 +1322,7 @@ func (server *BgpServer) Api2PathList(resource api.Resource, name string, ApiPat
 
 		rf := bgp.AfiSafiToRouteFamily(nlri.AFI(), nlri.SAFI())
 
-		if resource == api.Resource_VRF {
+		if resource == Resource_VRF {
 			label, err := server.globalRib.GetNextLabel(name, nexthop, path.IsWithdraw)
 			if err != nil {
 				return nil, err
@@ -1352,7 +1349,7 @@ func (server *BgpServer) Api2PathList(resource api.Resource, name string, ApiPat
 			extcomms = append(extcomms, vrf.ExportRt...)
 		}
 
-		if resource != api.Resource_VRF && rf == bgp.RF_IPv4_UC {
+		if resource != Resource_VRF && rf == bgp.RF_IPv4_UC {
 			pattr = append(pattr, bgp.NewPathAttributeNextHop(nexthop))
 		} else {
 			pattr = append(pattr, bgp.NewPathAttributeMpReachNLRI(nexthop, []bgp.AddrPrefixInterface{nlri}))
@@ -1382,35 +1379,36 @@ func (server *BgpServer) Api2PathList(resource api.Resource, name string, ApiPat
 	return paths, nil
 }
 
-func (server *BgpServer) handleAddPathRequest(grpcReq *GrpcRequest) []*table.Path {
+func (server *BgpServer) AddPathRequest(req *Request) *Response {
 	var err error
 	var uuidBytes []byte
 	paths := make([]*table.Path, 0, 1)
-	arg, ok := grpcReq.Data.(*api.AddPathRequest)
+	arg, ok := req.Data.(*AddPathRequest)
 	if !ok {
 		err = fmt.Errorf("type assertion failed")
 	} else {
-		paths, err = server.Api2PathList(arg.Resource, arg.VrfId, []*api.Path{arg.Path})
+		paths, err = server.Api2PathList(arg.Resource, arg.VrfId, []*Path{arg.Path})
 		if err == nil {
 			u := uuid.NewV4()
 			uuidBytes = u.Bytes()
 			paths[0].SetUUID(uuidBytes)
 		}
 	}
-	grpcReq.ResponseCh <- &GrpcResponse{
+	if len(paths) > 0 {
+		msgs, _ = server.propagateUpdate(nil, pathList)
+	}
+	return &Response{
 		ResponseErr: err,
-		Data: &api.AddPathResponse{
+		Data: &AddPathResponse{
 			Uuid: uuidBytes,
 		},
-	}
-	close(grpcReq.ResponseCh)
-	return paths
+	}, nil
 }
 
-func (server *BgpServer) handleDeletePathRequest(grpcReq *GrpcRequest) []*table.Path {
+func (server *BgpServer) handleDeletePathRequest(req *Request) *Response {
 	var err error
 	paths := make([]*table.Path, 0, 1)
-	arg, ok := grpcReq.Data.(*api.DeletePathRequest)
+	arg, ok := req.Data.(*DeletePathRequest)
 	if !ok {
 		err = fmt.Errorf("type assertion failed")
 	} else {
@@ -1430,7 +1428,7 @@ func (server *BgpServer) handleDeletePathRequest(grpcReq *GrpcRequest) []*table.
 			}
 		} else if arg.Path != nil {
 			arg.Path.IsWithdraw = true
-			paths, err = server.Api2PathList(arg.Resource, arg.VrfId, []*api.Path{arg.Path})
+			paths, err = server.Api2PathList(arg.Resource, arg.VrfId, []*Path{arg.Path})
 		} else {
 			// delete all paths
 			families := server.globalRib.GetRFlist()
@@ -1442,146 +1440,112 @@ func (server *BgpServer) handleDeletePathRequest(grpcReq *GrpcRequest) []*table.
 			}
 		}
 	}
-	grpcReq.ResponseCh <- &GrpcResponse{
-		ResponseErr: err,
-		Data:        &api.DeletePathResponse{},
+	if len(pathList) > 0 {
+		msgs, _ = server.propagateUpdate(nil, pathList)
 	}
-	close(grpcReq.ResponseCh)
-	return paths
+
+	return &Response{
+		ResponseErr: err,
+		Data:        &DeletePathResponse{},
+	}, nil
 }
 
-func (server *BgpServer) handleInjectMrtRequest(grpcReq *GrpcRequest) []*table.Path {
+func (server *BgpServer) InjectMrtRequest(req *Request) *Response {
 	var err error
 	var paths []*table.Path
-	arg, ok := grpcReq.Data.(*api.InjectMrtRequest)
+	result := &Response{}
+	arg, ok := req.Data.(*InjectMrtRequest)
 	if !ok {
 		err = fmt.Errorf("type assertion failed")
 	}
 	if err == nil {
 		paths, err = server.Api2PathList(arg.Resource, arg.VrfId, arg.Paths)
 		if err == nil {
-			return paths
+			if len(pathList) > 0 {
+				msgs, _ = server.propagateUpdate(nil, pathList)
+			}
+		}
+	} else {
+		result = &Response{
+			ResponseErr: err,
 		}
 	}
-	result := &GrpcResponse{
-		ResponseErr: err,
-	}
-	grpcReq.ResponseCh <- result
-	close(grpcReq.ResponseCh)
-	return []*table.Path{}
-
+	return result
 }
 
-func (server *BgpServer) handleAddVrfRequest(grpcReq *GrpcRequest) ([]*table.Path, error) {
-	arg, _ := grpcReq.Data.(*api.AddVrfRequest)
+func (server *BgpServer) handleAddVrfRequest(req *Request) ([]*table.Path, error) {
+	arg, _ := req.Data.(*AddVrfRequest)
 	rib := server.globalRib
-	rd := bgp.GetRouteDistinguisher(arg.Vrf.Rd)
-	f := func(bufs [][]byte) ([]bgp.ExtendedCommunityInterface, error) {
-		ret := make([]bgp.ExtendedCommunityInterface, 0, len(bufs))
-		for _, rt := range bufs {
-			r, err := bgp.ParseExtended(rt)
-			if err != nil {
-				return nil, err
-			}
-			ret = append(ret, r)
-		}
-		return ret, nil
-	}
-	importRt, err := f(arg.Vrf.ImportRt)
-	if err != nil {
-		return nil, err
-	}
-	exportRt, err := f(arg.Vrf.ExportRt)
-	if err != nil {
-		return nil, err
-	}
 	pi := &table.PeerInfo{
 		AS:      server.bgpConfig.Global.Config.As,
 		LocalID: net.ParseIP(server.bgpConfig.Global.Config.RouterId).To4(),
 	}
-	return rib.AddVrf(arg.Vrf.Name, rd, importRt, exportRt, pi)
+	return rib.AddVrf(arg.Vrf.Name, arg.Vrf.Rd, arg.Vrf.ImportRt, arg.Vrf.ExportRt, pi)
 }
 
-func (server *BgpServer) handleDeleteVrfRequest(grpcReq *GrpcRequest) ([]*table.Path, error) {
-	arg, _ := grpcReq.Data.(*api.DeleteVrfRequest)
+func (server *BgpServer) handleDeleteVrfRequest(req *Request) ([]*table.Path, error) {
+	arg, _ := req.Data.(*DeleteVrfRequest)
 	rib := server.globalRib
 	return rib.DeleteVrf(arg.Vrf.Name)
 }
-
-func (server *BgpServer) handleVrfRequest(req *GrpcRequest) []*table.Path {
-	var msgs []*table.Path
-	result := &GrpcResponse{}
-
-	switch req.RequestType {
-	case REQ_VRF:
-		arg := req.Data.(*api.GetRibRequest)
-		name := arg.Table.Name
-		rib := server.globalRib
-		vrfs := rib.Vrfs
-		if _, ok := vrfs[name]; !ok {
-			result.ResponseErr = fmt.Errorf("vrf %s not found", name)
-			break
-		}
-		var rf bgp.RouteFamily
-		switch bgp.RouteFamily(arg.Table.Family) {
-		case bgp.RF_IPv4_UC:
-			rf = bgp.RF_IPv4_VPN
-		case bgp.RF_IPv6_UC:
-			rf = bgp.RF_IPv6_VPN
-		case bgp.RF_EVPN:
-			rf = bgp.RF_EVPN
-		default:
-			result.ResponseErr = fmt.Errorf("unsupported route family: %s", bgp.RouteFamily(arg.Table.Family))
-			break
-		}
-		paths := rib.GetPathList(table.GLOBAL_RIB_NAME, []bgp.RouteFamily{rf})
-		dsts := make([]*api.Destination, 0, len(paths))
-		for _, path := range paths {
-			ok := table.CanImportToVrf(vrfs[name], path)
-			if !ok {
-				continue
-			}
-			dsts = append(dsts, &api.Destination{
-				Prefix: path.GetNlri().String(),
-				Paths:  []*api.Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
-			})
-		}
-		req.ResponseCh <- &GrpcResponse{
-			Data: &api.GetRibResponse{
-				Table: &api.Table{
-					Type:         arg.Table.Type,
-					Family:       arg.Table.Family,
-					Destinations: dsts,
-				},
-			},
-		}
-		goto END
-	case REQ_GET_VRF:
-		l := make([]*api.Vrf, 0, len(server.globalRib.Vrfs))
-		for _, vrf := range server.globalRib.Vrfs {
-			l = append(l, vrf.ToApiStruct())
-		}
-		result.Data = &api.GetVrfResponse{Vrfs: l}
-	case REQ_ADD_VRF:
-		msgs, result.ResponseErr = server.handleAddVrfRequest(req)
-		result.Data = &api.AddVrfResponse{}
-	case REQ_DELETE_VRF:
-		msgs, result.ResponseErr = server.handleDeleteVrfRequest(req)
-		result.Data = &api.DeleteVrfResponse{}
-	default:
-		result.ResponseErr = fmt.Errorf("unknown request type: %d", req.RequestType)
+func (server *BgpServer) GetVrfRib(req *Request) []*table.Path {
+	arg := req.Data.(*GetRibRequest)
+	name := arg.Table.Name
+	rib := server.globalRib
+	vrfs := rib.Vrfs
+	if _, ok := vrfs[name]; !ok {
+		result.ResponseErr = fmt.Errorf("vrf %s not found", name)
+		break
 	}
-
-	req.ResponseCh <- result
-END:
-	close(req.ResponseCh)
-	return msgs
+	var rf bgp.RouteFamily
+	switch bgp.RouteFamily(arg.Table.Family) {
+	case bgp.RF_IPv4_UC:
+		rf = bgp.RF_IPv4_VPN
+	case bgp.RF_IPv6_UC:
+		rf = bgp.RF_IPv6_VPN
+	case bgp.RF_EVPN:
+		rf = bgp.RF_EVPN
+	default:
+		result.ResponseErr = fmt.Errorf("unsupported route family: %s", bgp.RouteFamily(arg.Table.Family))
+		break
+	}
+	paths := rib.GetPathList(table.GLOBAL_RIB_NAME, []bgp.RouteFamily{rf})
+	dsts := make([]*Destination, 0, len(paths))
+	for _, path := range paths {
+		ok := table.CanImportToVrf(vrfs[name], path)
+		if !ok {
+			continue
+		}
+		dsts = append(dsts, &Destination{
+			Prefix: path.GetNlri().String(),
+			Paths:  []*Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
+		})
+	}
+	return &Response{
+		Data: &GetRibResponse{
+			Table: &Table{
+				Type:         arg.Table.Type,
+				Family:       arg.Table.Family,
+				Destinations: dsts,
+			},
+		},
+	}
 }
-
-func (server *BgpServer) handleModConfig(grpcReq *GrpcRequest) error {
+func (server *BgpServer) GetVrf(req *Request) *Response {
+	return &Response{Data: &GetVrfResponse{Vrfs: server.globalRib.Vrfs}}
+}
+func (server *BgpServer) AddVrf(req *Request) *Response {
+	msgs, result.ResponseErr = server.handleAddVrfRequest(req)
+	return &Response{Data: &AddVrfResponse{}}
+}
+func (server *BgpServer) DeleteVrf(req *Request) *Response {
+	msgs, result.ResponseErr = server.handleDeleteVrfRequest(req)
+	return &Response{Data: &DeleteVrfResponse{}}
+}
+func (server *BgpServer) handleModConfig(req *Request) error {
 	var c *config.Global
-	switch arg := grpcReq.Data.(type) {
-	case *api.StartServerRequest:
+	switch arg := req.Data.(type) {
+	case *StartServerRequest:
 		g := arg.Global
 		if net.ParseIP(g.RouterId) == nil {
 			return fmt.Errorf("invalid router-id format: %s", g.RouterId)
@@ -1620,10 +1584,10 @@ func (server *BgpServer) handleModConfig(grpcReq *GrpcRequest) error {
 		c = &b.Global
 	case *config.Global:
 		c = arg
-	case *api.StopServerRequest:
+	case *StopServerRequest:
 		for k, _ := range server.neighborMap {
-			_, err := server.handleDeleteNeighborRequest(&GrpcRequest{
-				Data: &api.DeleteNeighborRequest{
+			_, err := server.handleDeleteNeighborRequest(&Request{
+				Data: &DeleteNeighborRequest{
 					Peer: &api.Peer{
 						Conf: &api.PeerConf{
 							NeighborAddress: k,
@@ -1671,696 +1635,340 @@ func (server *BgpServer) handleModConfig(grpcReq *GrpcRequest) error {
 	return nil
 }
 
-func sendMultipleResponses(grpcReq *GrpcRequest, results []*GrpcResponse) {
-	defer close(grpcReq.ResponseCh)
+func sendMultipleResponses(req *Request, results []*Response) {
+	defer close(req.ResponseCh)
 	for _, r := range results {
 		select {
-		case grpcReq.ResponseCh <- r:
-		case <-grpcReq.EndCh:
+		case req.ResponseCh <- r:
+		case <-req.EndCh:
 			return
 		}
 	}
 }
 
-func (server *BgpServer) handleGrpc(grpcReq *GrpcRequest) []*SenderMsg {
-	var msgs []*SenderMsg
-
-	logOp := func(addr string, action string) {
-		log.WithFields(log.Fields{
-			"Topic": "Operation",
-			"Key":   addr,
-		}).Info(action)
+func (server *BgpServer) GetNeighbor(req *Request) *Response {
+	return &Response{
+		Data: &GetNeighborResponse{
+			Peers: server.neighborMap,
+		},
 	}
+}
 
-	reqToPeers := func(grpcReq *GrpcRequest) ([]*Peer, error) {
-		peers := make([]*Peer, 0)
-		if grpcReq.Name == "all" {
-			for _, p := range server.neighborMap {
-				peers = append(peers, p)
-			}
-			return peers, nil
-		}
-		peer, err := server.checkNeighborRequest(grpcReq)
-		return []*Peer{peer}, err
+func (server *BgpServer) GetRib(req *Request) *Response {
+	arg := grpcReq.Data.(*GetRibRequest)
+	if arg.Table.Type != Resource_LOCAL && arg.Table.Type != Resource_GLOBAL {
+		return nil, fmt.Errorf("unsupported resource type: %v", arg.Table.Type)
 	}
-
-	if server.bgpConfig.Global.Config.As == 0 && grpcReq.RequestType != REQ_START_SERVER {
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: fmt.Errorf("bgpd main loop is not started yet"),
-		}
-		close(grpcReq.ResponseCh)
-		return nil
+	d := &Table{
+		Type:   arg.Table.Type,
+		Family: arg.Table.Family,
 	}
-
-	var err error
-
-	switch grpcReq.RequestType {
-	case REQ_GET_SERVER:
-		g := server.bgpConfig.Global
-		result := &GrpcResponse{
-			Data: &api.GetServerResponse{
-				Global: &api.Global{
-					As:              g.Config.As,
-					RouterId:        g.Config.RouterId,
-					ListenPort:      g.Config.Port,
-					ListenAddresses: g.Config.LocalAddressList,
-					MplsLabelMin:    g.MplsLabelRange.MinLabel,
-					MplsLabelMax:    g.MplsLabelRange.MaxLabel,
-				},
-			},
-		}
-		grpcReq.ResponseCh <- result
-		close(grpcReq.ResponseCh)
-	case REQ_START_SERVER:
-		err := server.handleModConfig(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        &api.StartServerResponse{},
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_STOP_SERVER:
-		err := server.handleModConfig(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        &api.StopServerResponse{},
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GLOBAL_RIB, REQ_LOCAL_RIB:
-		arg := grpcReq.Data.(*api.GetRibRequest)
-		d := &api.Table{
-			Type:   arg.Table.Type,
-			Family: arg.Table.Family,
-		}
-		rib := server.globalRib
-		id := table.GLOBAL_RIB_NAME
-		if grpcReq.RequestType == REQ_LOCAL_RIB {
-			peer, ok := server.neighborMap[arg.Table.Name]
-			if !ok {
-				err = fmt.Errorf("Neighbor that has %v doesn't exist.", arg.Table.Name)
-				goto ERROR
-			}
-			if !peer.isRouteServerClient() {
-				err = fmt.Errorf("Neighbor %v doesn't have local rib", arg.Table.Name)
-				goto ERROR
-			}
-			id = peer.ID()
-		}
-		af := bgp.RouteFamily(arg.Table.Family)
-		if _, ok := rib.Tables[af]; !ok {
-			err = fmt.Errorf("address family: %s not supported", af)
-			goto ERROR
-		}
-
-		dsts := make([]*api.Destination, 0, len(rib.Tables[af].GetDestinations()))
-		if (af == bgp.RF_IPv4_UC || af == bgp.RF_IPv6_UC) && len(arg.Table.Destinations) > 0 {
-			f := func(id, cidr string) (bool, error) {
-				_, prefix, err := net.ParseCIDR(cidr)
-				if err != nil {
-					return false, err
-				}
-				if dst := rib.Tables[af].GetDestination(prefix.String()); dst != nil {
-					if d := dst.ToApiStruct(id); d != nil {
-						dsts = append(dsts, d)
-					}
-					return true, nil
-				} else {
-					return false, nil
-				}
-			}
-			for _, dst := range arg.Table.Destinations {
-				key := dst.Prefix
-				if _, err := f(id, key); err != nil {
-					if host := net.ParseIP(key); host != nil {
-						masklen := 32
-						if af == bgp.RF_IPv6_UC {
-							masklen = 128
-						}
-						for i := masklen; i > 0; i-- {
-							if y, _ := f(id, fmt.Sprintf("%s/%d", key, i)); y {
-								break
-							}
-						}
-					}
-				} else if dst.LongerPrefixes {
-					_, prefix, _ := net.ParseCIDR(key)
-					ones, bits := prefix.Mask.Size()
-					for i := ones + 1; i <= bits; i++ {
-						prefix.Mask = net.CIDRMask(i, bits)
-						f(id, prefix.String())
-					}
-				}
-			}
-		} else {
-			for _, dst := range rib.Tables[af].GetSortedDestinations() {
-				if d := dst.ToApiStruct(id); d != nil {
-					dsts = append(dsts, d)
-				}
-			}
-		}
-		d.Destinations = dsts
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: &api.GetRibResponse{Table: d},
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_BMP_GLOBAL:
-		paths := server.globalRib.GetBestPathList(table.GLOBAL_RIB_NAME, server.globalRib.GetRFlist())
-		bmpmsgs := make([]*bmp.BMPMessage, 0, len(paths))
-		for _, path := range paths {
-			msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
-			buf, _ := msgs[0].Serialize()
-			bmpmsgs = append(bmpmsgs, bmpPeerRoute(bmp.BMP_PEER_TYPE_GLOBAL, true, 0, path.GetSource(), path.GetTimestamp().Unix(), buf))
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: bmpmsgs,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_PATH:
-		pathList := server.handleAddPathRequest(grpcReq)
-		if len(pathList) > 0 {
-			msgs, _ = server.propagateUpdate(nil, pathList)
-		}
-	case REQ_DELETE_PATH:
-		pathList := server.handleDeletePathRequest(grpcReq)
-		if len(pathList) > 0 {
-			msgs, _ = server.propagateUpdate(nil, pathList)
-		}
-	case REQ_BMP_NEIGHBORS:
-		//TODO: merge REQ_NEIGHBORS and REQ_BMP_NEIGHBORS
-		msgs := make([]*bmp.BMPMessage, 0, len(server.neighborMap))
-		for _, peer := range server.neighborMap {
-			if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
-				continue
-			}
-			laddr, lport := peer.fsm.LocalHostPort()
-			_, rport := peer.fsm.RemoteHostPort()
-			sentOpen := buildopen(peer.fsm.gConf, peer.fsm.pConf)
-			info := peer.fsm.peerInfo
-			timestamp := peer.fsm.pConf.Timers.State.Uptime
-			msg := bmpPeerUp(laddr, lport, rport, sentOpen, peer.fsm.recvOpen, bmp.BMP_PEER_TYPE_GLOBAL, false, 0, info, timestamp)
-			msgs = append(msgs, msg)
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: msgs,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_NEIGHBOR:
-		l := []*api.Peer{}
-		for _, peer := range server.neighborMap {
-			l = append(l, peer.ToApiStruct())
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: &api.GetNeighborResponse{
-				Peers: l,
-			},
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADJ_RIB_IN, REQ_ADJ_RIB_OUT:
-		arg := grpcReq.Data.(*api.GetRibRequest)
-		d := &api.Table{
-			Type:   arg.Table.Type,
-			Family: arg.Table.Family,
-		}
-
+	rib := server.globalRib
+	id := table.GLOBAL_RIB_NAME
+	if arg.Table.Type == Resource_LOCAL {
 		peer, ok := server.neighborMap[arg.Table.Name]
 		if !ok {
 			err = fmt.Errorf("Neighbor that has %v doesn't exist.", arg.Table.Name)
 			goto ERROR
 		}
+		if !peer.isRouteServerClient() {
+			err = fmt.Errorf("Neighbor %v doesn't have local rib", arg.Table.Name)
+			goto ERROR
+		}
+		id = peer.ID()
+	}
+	af := bgp.RouteFamily(arg.Table.Family)
+	if _, ok := rib.Tables[af]; !ok {
+		err = fmt.Errorf("address family: %s not supported", af)
+		goto ERROR
+	}
 
-		rf := bgp.RouteFamily(arg.Table.Family)
-		var paths []*table.Path
-		if grpcReq.RequestType == REQ_ADJ_RIB_IN {
-			paths = peer.adjRibIn.PathList([]bgp.RouteFamily{rf}, false)
-			log.Debugf("RouteFamily=%v adj-rib-in found : %d", rf.String(), len(paths))
-		} else {
-			paths = peer.adjRibOut.PathList([]bgp.RouteFamily{rf}, false)
-			log.Debugf("RouteFamily=%v adj-rib-out found : %d", rf.String(), len(paths))
+	dsts := make([]*Destination, 0, len(rib.Tables[af].GetDestinations()))
+	if (af == bgp.RF_IPv4_UC || af == bgp.RF_IPv6_UC) && len(arg.Table.Destinations) > 0 {
+		f := func(id, cidr string) (bool, error) {
+			_, prefix, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return false, err
+			}
+			if dst := rib.Tables[af].GetDestination(prefix.String()); dst != nil {
+				if d := dst.ToApiStruct(id); d != nil {
+					dsts = append(dsts, d)
+				}
+				return true, nil
+			} else {
+				return false, nil
+			}
+		}
+		for _, dst := range arg.Table.Destinations {
+			key := dst.Prefix
+			if _, err := f(id, key); err != nil {
+				if host := net.ParseIP(key); host != nil {
+					masklen := 32
+					if af == bgp.RF_IPv6_UC {
+						masklen = 128
+					}
+					for i := masklen; i > 0; i-- {
+						if y, _ := f(id, fmt.Sprintf("%s/%d", key, i)); y {
+							break
+						}
+					}
+				}
+			} else if dst.LongerPrefixes {
+				_, prefix, _ := net.ParseCIDR(key)
+				ones, bits := prefix.Mask.Size()
+				for i := ones + 1; i <= bits; i++ {
+					prefix.Mask = net.CIDRMask(i, bits)
+					f(id, prefix.String())
+				}
+			}
+		}
+	} else {
+		for _, dst := range rib.Tables[af].GetSortedDestinations() {
+			if d := dst.ToApiStruct(id); d != nil {
+				dsts = append(dsts, d)
+			}
+		}
+	}
+	d.Destinations = dsts
+	return &GrpcResponse{
+		Data: &GetRibResponse{Table: d},
+	}
+}
+func (server *BgpServer) reqToPeers(req *Request) ([]*Peer, error) {
+	peers := make([]*Peer, 0)
+	if req.Name == "all" {
+		for _, p := range server.neighborMap {
+			peers = append(peers, p)
+		}
+		return peers, nil
+	}
+	peer, err := server.checkNeighborRequest(req)
+	return []*Peer{peer}, err
+}
+func (server *BgpServer) ResetNeighbor(req *Request) *Response {
+	peers, err := reqToPeers(req)
+	if err != nil {
+		break
+	}
+	logOp(grpcReq.Name, "Neighbor reset")
+	m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_RESET, nil)
+	for _, peer := range peers {
+		peer.fsm.idleHoldTime = peer.fsm.pConf.Timers.Config.IdleHoldTimeAfterReset
+		msgs = append(msgs, newSenderMsg(peer, nil, m, false))
+	}
+	return &GrpcResponse{Data: &api.ResetNeighborResponse{}}
+}
+func (server *BgpServer) SoftResetNeighborIN(req *Request) *Response {
+	peers, err := reqToPeers(grpcReq)
+	if err != nil {
+		break
+	}
+	log.WithFields(log.Fields{"Topic": "Operation", "Key": grpcReq.Name}).Info("Neighbor soft reset in")
+	for _, peer := range peers {
+		pathList := []*table.Path{}
+		families := []bgp.RouteFamily{req.RouteFamily}
+		if families[0] == bgp.RouteFamily(0) {
+			families = peer.configuredRFlist()
+		}
+		for _, path := range peer.adjRibIn.PathList(families, false) {
+			exResult := path.Filtered(peer.ID())
+			path.Filter(peer.ID(), table.POLICY_DIRECTION_NONE)
+			if server.policy.ApplyPolicy(peer.ID(), table.POLICY_DIRECTION_IN, path, nil) != nil {
+				pathList = append(pathList, path.Clone(false))
+			} else {
+				path.Filter(peer.ID(), table.POLICY_DIRECTION_IN)
+				if exResult != table.POLICY_DIRECTION_IN {
+					pathList = append(pathList, path.Clone(true))
+				}
+			}
+		}
+		peer.adjRibIn.RefreshAcceptedNumber(families)
+		m, _ := server.propagateUpdate(peer, pathList)
+		msgs = append(msgs, m...)
+	}
+	return &Response{Data: &SoftResetNeighborResponse{}}
+}
+func (server *BgpServer) SoftResetNeighborOUT(req *Request) *Response {
+	peers, err := reqToPeers(grpcReq)
+	if err != nil {
+		break
+	}
+	log.WithFields(log.Fields{"Topic": "Operation", "Key": req.Name}).Info("Neighbor soft reset out")
+	for _, peer := range peers {
+		if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
+			continue
 		}
 
-		results := make([]*api.Destination, 0, len(paths))
-		switch rf {
-		case bgp.RF_IPv4_UC, bgp.RF_IPv6_UC:
-			r := radix.New()
-			for _, p := range paths {
-				key := p.GetNlri().String()
-				found := true
-				for _, dst := range arg.Table.Destinations {
-					found = false
-					if dst.Prefix == key {
+		families := []bgp.RouteFamily{grpcReq.RouteFamily}
+		if families[0] == bgp.RouteFamily(0) {
+			families = peer.configuredRFlist()
+		}
+
+		sentPathList := peer.adjRibOut.PathList(families, false)
+		peer.adjRibOut.Drop(families)
+		pathList, filtered := peer.getBestFromLocal(families)
+		if len(pathList) > 0 {
+			peer.adjRibOut.Update(pathList)
+			msgs = append(msgs, newSenderMsg(peer, pathList, nil, false))
+		}
+		if len(filtered) > 0 {
+			withdrawnList := make([]*table.Path, 0, len(filtered))
+			for _, p := range filtered {
+				found := false
+				for _, sentPath := range sentPathList {
+					if p.GetNlri() == sentPath.GetNlri() {
 						found = true
 						break
 					}
 				}
-
 				if found {
-					b, _ := r.Get(table.CidrToRadixkey(key))
-					if b == nil {
-						r.Insert(table.CidrToRadixkey(key), &api.Destination{
-							Prefix: key,
-							Paths:  []*api.Path{p.ToApiStruct(peer.TableID())},
-						})
-					} else {
-						d := b.(*api.Destination)
-						d.Paths = append(d.Paths, p.ToApiStruct(peer.TableID()))
-					}
+					withdrawnList = append(withdrawnList, p.Clone(true))
 				}
 			}
-			r.Walk(func(s string, v interface{}) bool {
-				results = append(results, v.(*api.Destination))
-				return false
-			})
-		default:
-			for _, p := range paths {
-				results = append(results, &api.Destination{
-					Prefix: p.GetNlri().String(),
-					Paths:  []*api.Path{p.ToApiStruct(peer.TableID())},
-				})
-			}
+			msgs = append(msgs, newSenderMsg(peer, withdrawnList, nil, false))
 		}
-		d.Destinations = results
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: &api.GetRibResponse{Table: d},
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_BMP_ADJ_IN:
-		bmpmsgs := make([]*bmp.BMPMessage, 0)
-		for _, peer := range server.neighborMap {
-			if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
-				continue
-			}
-			for _, path := range peer.adjRibIn.PathList(peer.configuredRFlist(), false) {
-				msgs := table.CreateUpdateMsgFromPaths([]*table.Path{path})
-				buf, _ := msgs[0].Serialize()
-				bmpmsgs = append(bmpmsgs, bmpPeerRoute(bmp.BMP_PEER_TYPE_GLOBAL, false, 0, peer.fsm.peerInfo, path.GetTimestamp().Unix(), buf))
-			}
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data: bmpmsgs,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_NEIGHBOR_SHUTDOWN:
-		peers, err := reqToPeers(grpcReq)
-		if err != nil {
-			break
-		}
-		logOp(grpcReq.Name, "Neighbor shutdown")
-		m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN, nil)
-		for _, peer := range peers {
-			msgs = append(msgs, newSenderMsg(peer, nil, m, false))
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{Data: &api.ShutdownNeighborResponse{}}
-		close(grpcReq.ResponseCh)
-
-	case REQ_NEIGHBOR_RESET:
-		peers, err := reqToPeers(grpcReq)
-		if err != nil {
-			break
-		}
-		logOp(grpcReq.Name, "Neighbor reset")
-		m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_RESET, nil)
-		for _, peer := range peers {
-			peer.fsm.idleHoldTime = peer.fsm.pConf.Timers.Config.IdleHoldTimeAfterReset
-			msgs = append(msgs, newSenderMsg(peer, nil, m, false))
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{Data: &api.ResetNeighborResponse{}}
-		close(grpcReq.ResponseCh)
-
-	case REQ_NEIGHBOR_SOFT_RESET, REQ_NEIGHBOR_SOFT_RESET_IN:
-		peers, err := reqToPeers(grpcReq)
-		if err != nil {
-			break
-		}
-		if grpcReq.RequestType == REQ_NEIGHBOR_SOFT_RESET {
-			logOp(grpcReq.Name, "Neighbor soft reset")
-		} else {
-			logOp(grpcReq.Name, "Neighbor soft reset in")
-		}
-
-		for _, peer := range peers {
-			pathList := []*table.Path{}
-			families := []bgp.RouteFamily{grpcReq.RouteFamily}
-			if families[0] == bgp.RouteFamily(0) {
-				families = peer.configuredRFlist()
-			}
-			for _, path := range peer.adjRibIn.PathList(families, false) {
-				exResult := path.Filtered(peer.ID())
-				path.Filter(peer.ID(), table.POLICY_DIRECTION_NONE)
-				if server.policy.ApplyPolicy(peer.ID(), table.POLICY_DIRECTION_IN, path, nil) != nil {
-					pathList = append(pathList, path.Clone(false))
-				} else {
-					path.Filter(peer.ID(), table.POLICY_DIRECTION_IN)
-					if exResult != table.POLICY_DIRECTION_IN {
-						pathList = append(pathList, path.Clone(true))
-					}
-				}
-			}
-			peer.adjRibIn.RefreshAcceptedNumber(families)
-			m, _ := server.propagateUpdate(peer, pathList)
-			msgs = append(msgs, m...)
-		}
-
-		if grpcReq.RequestType == REQ_NEIGHBOR_SOFT_RESET_IN {
-			grpcReq.ResponseCh <- &GrpcResponse{Data: &api.SoftResetNeighborResponse{}}
-			close(grpcReq.ResponseCh)
-			break
-		}
-		fallthrough
-	case REQ_NEIGHBOR_SOFT_RESET_OUT, REQ_DEFERRAL_TIMER_EXPIRED:
-		peers, err := reqToPeers(grpcReq)
-		if err != nil {
-			break
-		}
-		if grpcReq.RequestType == REQ_NEIGHBOR_SOFT_RESET_OUT {
-			logOp(grpcReq.Name, "Neighbor soft reset out")
-		}
-		for _, peer := range peers {
-			if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
-				continue
-			}
-
-			families := []bgp.RouteFamily{grpcReq.RouteFamily}
-			if families[0] == bgp.RouteFamily(0) {
-				families = peer.configuredRFlist()
-			}
-
-			if grpcReq.RequestType == REQ_DEFERRAL_TIMER_EXPIRED {
-				if peer.fsm.pConf.GracefulRestart.State.LocalRestarting {
-					peer.fsm.pConf.GracefulRestart.State.LocalRestarting = false
-					log.WithFields(log.Fields{
-						"Topic":    "Peer",
-						"Key":      peer.ID(),
-						"Families": families,
-					}).Debug("deferral timer expired")
-				} else if c := config.GetAfiSafi(peer.fsm.pConf, bgp.RF_RTC_UC); peer.fsm.rfMap[bgp.RF_RTC_UC] && !c.MpGracefulRestart.State.EndOfRibReceived {
-					log.WithFields(log.Fields{
-						"Topic":    "Peer",
-						"Key":      peer.ID(),
-						"Families": families,
-					}).Debug("route-target deferral timer expired")
-				} else {
-					continue
-				}
-			}
-
-			sentPathList := peer.adjRibOut.PathList(families, false)
-			peer.adjRibOut.Drop(families)
-			pathList, filtered := peer.getBestFromLocal(families)
-			if len(pathList) > 0 {
-				peer.adjRibOut.Update(pathList)
-				msgs = append(msgs, newSenderMsg(peer, pathList, nil, false))
-			}
-			if grpcReq.RequestType != REQ_DEFERRAL_TIMER_EXPIRED && len(filtered) > 0 {
-				withdrawnList := make([]*table.Path, 0, len(filtered))
-				for _, p := range filtered {
-					found := false
-					for _, sentPath := range sentPathList {
-						if p.GetNlri() == sentPath.GetNlri() {
-							found = true
-							break
-						}
-					}
-					if found {
-						withdrawnList = append(withdrawnList, p.Clone(true))
-					}
-				}
-				msgs = append(msgs, newSenderMsg(peer, withdrawnList, nil, false))
-			}
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{Data: &api.SoftResetNeighborResponse{}}
-		close(grpcReq.ResponseCh)
-
-	case REQ_NEIGHBOR_ENABLE, REQ_NEIGHBOR_DISABLE:
-		peer, err1 := server.checkNeighborRequest(grpcReq)
-		if err1 != nil {
-			break
-		}
-		result := &GrpcResponse{}
-		if grpcReq.RequestType == REQ_NEIGHBOR_ENABLE {
-			select {
-			case peer.fsm.adminStateCh <- ADMIN_STATE_UP:
-				log.WithFields(log.Fields{
-					"Topic": "Peer",
-					"Key":   peer.fsm.pConf.Config.NeighborAddress,
-				}).Debug("ADMIN_STATE_UP requested")
-			default:
-				log.Warning("previous request is still remaining. : ", peer.fsm.pConf.Config.NeighborAddress)
-				result.ResponseErr = fmt.Errorf("previous request is still remaining %v", peer.fsm.pConf.Config.NeighborAddress)
-			}
-			result.Data = &api.EnableNeighborResponse{}
-		} else {
-			select {
-			case peer.fsm.adminStateCh <- ADMIN_STATE_DOWN:
-				log.WithFields(log.Fields{
-					"Topic": "Peer",
-					"Key":   peer.fsm.pConf.Config.NeighborAddress,
-				}).Debug("ADMIN_STATE_DOWN requested")
-			default:
-				log.Warning("previous request is still remaining. : ", peer.fsm.pConf.Config.NeighborAddress)
-				result.ResponseErr = fmt.Errorf("previous request is still remaining %v", peer.fsm.pConf.Config.NeighborAddress)
-			}
-			result.Data = &api.DisableNeighborResponse{}
-		}
-		grpcReq.ResponseCh <- result
-		close(grpcReq.ResponseCh)
-	case REQ_GRPC_ADD_NEIGHBOR:
-		_, err := server.handleAddNeighborRequest(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data:        &api.AddNeighborResponse{},
-			ResponseErr: err,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GRPC_DELETE_NEIGHBOR:
-		m, err := server.handleDeleteNeighborRequest(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data:        &api.DeleteNeighborResponse{},
-			ResponseErr: err,
-		}
-		if len(m) > 0 {
-			msgs = append(msgs, m...)
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_NEIGHBOR:
-		_, err := server.handleAddNeighbor(grpcReq.Data.(*config.Neighbor))
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_DEL_NEIGHBOR:
-		m, err := server.handleDelNeighbor(grpcReq.Data.(*config.Neighbor), bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_PEER_DECONFIGURED)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-		}
-		if len(m) > 0 {
-			msgs = append(msgs, m...)
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_UPDATE_NEIGHBOR:
-		m, policyUpdated, err := server.handleUpdateNeighbor(grpcReq.Data.(*config.Neighbor))
-		grpcReq.ResponseCh <- &GrpcResponse{
-			Data:        policyUpdated,
-			ResponseErr: err,
-		}
-		if len(m) > 0 {
-			msgs = append(msgs, m...)
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GET_DEFINED_SET:
-		rsp, err := server.handleGrpcGetDefinedSet(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_DEFINED_SET:
-		rsp, err := server.handleGrpcAddDefinedSet(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_DELETE_DEFINED_SET:
-		rsp, err := server.handleGrpcDeleteDefinedSet(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_REPLACE_DEFINED_SET:
-		rsp, err := server.handleGrpcReplaceDefinedSet(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GET_STATEMENT:
-		rsp, err := server.handleGrpcGetStatement(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_STATEMENT:
-		data, err := server.handleGrpcAddStatement(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_DELETE_STATEMENT:
-		data, err := server.handleGrpcDeleteStatement(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_REPLACE_STATEMENT:
-		data, err := server.handleGrpcReplaceStatement(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GET_POLICY:
-		rsp, err := server.handleGrpcGetPolicy(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        rsp,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_POLICY:
-		data, err := server.handleGrpcAddPolicy(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_DELETE_POLICY:
-		data, err := server.handleGrpcDeletePolicy(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_REPLACE_POLICY:
-		data, err := server.handleGrpcReplacePolicy(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_GET_POLICY_ASSIGNMENT:
-		data, err := server.handleGrpcGetPolicyAssignment(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_ADD_POLICY_ASSIGNMENT:
-		data, err := server.handleGrpcAddPolicyAssignment(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_DELETE_POLICY_ASSIGNMENT:
-		data, err := server.handleGrpcDeletePolicyAssignment(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_REPLACE_POLICY_ASSIGNMENT:
-		data, err := server.handleGrpcReplacePolicyAssignment(grpcReq)
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-			Data:        data,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_MONITOR_GLOBAL_BEST_CHANGED, REQ_MONITOR_NEIGHBOR_PEER_STATE:
-		server.broadcastReqs = append(server.broadcastReqs, grpcReq)
-	case REQ_MONITOR_INCOMING:
-		if grpcReq.Name != "" {
-			if _, err = server.checkNeighborRequest(grpcReq); err != nil {
-				break
-			}
-		}
-		w := server.watchers[WATCHER_GRPC_INCOMING]
-		go w.(*grpcIncomingWatcher).addRequest(grpcReq)
-	case REQ_ENABLE_MRT:
-		server.handleEnableMrtRequest(grpcReq)
-	case REQ_DISABLE_MRT:
-		server.handleDisableMrtRequest(grpcReq)
-	case REQ_INJECT_MRT:
-		pathList := server.handleInjectMrtRequest(grpcReq)
-		if len(pathList) > 0 {
-			msgs, _ = server.propagateUpdate(nil, pathList)
-			grpcReq.ResponseCh <- &GrpcResponse{}
-			close(grpcReq.ResponseCh)
-		}
-	case REQ_ADD_BMP:
-		server.handleAddBmp(grpcReq)
-	case REQ_DELETE_BMP:
-		server.handleDeleteBmp(grpcReq)
-	case REQ_VALIDATE_RIB:
-		server.handleValidateRib(grpcReq)
-	case REQ_INITIALIZE_RPKI:
-		g := grpcReq.Data.(*config.Global)
-		grpcDone(grpcReq, server.roaManager.SetAS(g.Config.As))
-	case REQ_ADD_RPKI, REQ_DELETE_RPKI, REQ_ENABLE_RPKI, REQ_DISABLE_RPKI, REQ_RESET_RPKI, REQ_SOFT_RESET_RPKI:
-		server.handleModRpki(grpcReq)
-	case REQ_ROA, REQ_GET_RPKI:
-		rsp := server.roaManager.handleGRPC(grpcReq)
-		grpcReq.ResponseCh <- rsp
-		close(grpcReq.ResponseCh)
-	case REQ_VRF, REQ_GET_VRF, REQ_ADD_VRF, REQ_DELETE_VRF:
-		pathList := server.handleVrfRequest(grpcReq)
-		if len(pathList) > 0 {
-			msgs, _ = server.propagateUpdate(nil, pathList)
-		}
-	case REQ_RELOAD_POLICY:
-		err := server.handlePolicy(grpcReq.Data.(config.RoutingPolicy))
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-		}
-		close(grpcReq.ResponseCh)
-	case REQ_INITIALIZE_ZEBRA:
-		c := grpcReq.Data.(*config.ZebraConfig)
-		cli, err := NewZclient(c.Url, c.RedistributeRouteTypeList)
-		if err == nil {
-			server.zclient = cli
-			server.zapiMsgCh = server.zclient.Receive()
-		}
-		grpcReq.ResponseCh <- &GrpcResponse{
-			ResponseErr: err,
-		}
-		close(grpcReq.ResponseCh)
-	default:
-		err = fmt.Errorf("Unknown request type: %v", grpcReq.RequestType)
-		goto ERROR
 	}
-	return msgs
-ERROR:
-	grpcReq.ResponseCh <- &GrpcResponse{
-		ResponseErr: err,
+	return &Response{Data: &SoftResetNeighborResponse{}}
+}
+func (server *BgpServer) SoftResetNeighbor(req *Request) *Response {
+	log.WithFields(log.Fields{"Topic": "Operation", "Key": req.Name}).Info("Neighbor soft reset")
+	_, err := SoftResetNeighborIN(req)
+	if err != nil {
+		return nil
 	}
-	close(grpcReq.ResponseCh)
-	return msgs
+	res := SoftResetNeighborOUT(req)
+	return res
+}
+func (server *BgpServer) SoftResetNeighborTIMER_EXPIRED(req *Request) *Response {
+	peers, err := reqToPeers(req)
+	if err != nil {
+		break
+	}
+	logOp(grpcReq.Name, "Neighbor soft reset time expires")
+	for _, peer := range peers {
+		if peer.fsm.state != bgp.BGP_FSM_ESTABLISHED {
+			continue
+		}
+
+		families := []bgp.RouteFamily{grpcReq.RouteFamily}
+		if families[0] == bgp.RouteFamily(0) {
+			families = peer.configuredRFlist()
+		}
+
+		if peer.fsm.pConf.GracefulRestart.State.LocalRestarting {
+			peer.fsm.pConf.GracefulRestart.State.LocalRestarting = false
+			log.WithFields(log.Fields{
+				"Topic":    "Peer",
+				"Key":      peer.ID(),
+				"Families": families,
+			}).Debug("deferral timer expired")
+		} else if c := config.GetAfiSafi(peer.fsm.pConf, bgp.RF_RTC_UC); peer.fsm.rfMap[bgp.RF_RTC_UC] && !c.MpGracefulRestart.State.EndOfRibReceived {
+			log.WithFields(log.Fields{
+				"Topic":    "Peer",
+				"Key":      peer.ID(),
+				"Families": families,
+			}).Debug("route-target deferral timer expired")
+		} else {
+			continue
+		}
+
+		sentPathList := peer.adjRibOut.PathList(families, false)
+		peer.adjRibOut.Drop(families)
+		pathList, filtered := peer.getBestFromLocal(families)
+		if len(pathList) > 0 {
+			peer.adjRibOut.Update(pathList)
+			msgs = append(msgs, newSenderMsg(peer, pathList, nil, false))
+		}
+	}
+	return &Response{Data: &api.SoftResetNeighborResponse{}}
 }
 
-func (server *BgpServer) handleGrpcGetDefinedSet(grpcReq *GrpcRequest) (*api.GetDefinedSetResponse, error) {
-	arg := grpcReq.Data.(*api.GetDefinedSetRequest)
+func (server *BgpServer) ShutdownNeighbor(req *Request) *Response {
+	peers, err := reqToPeers(Req)
+	if err != nil {
+		break
+	}
+	log.WithFields(log.Fields{"Topic": "Operation", "Key": Req.Name}).Info("Neighbor shutdown")
+	m := bgp.NewBGPNotificationMessage(bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN, nil)
+	for _, peer := range peers {
+		msgs = append(msgs, newSenderMsg(peer, nil, m, false))
+	}
+	return &GrpcResponse{Data: &api.ShutdownNeighborResponse{}}
+}
+
+func (server *BgpServer) EnableNeighbor(req *Request) *Response {
+	peer, err1 := server.checkNeighborRequest(grpcReq)
+	if err1 != nil {
+		return nil, err1
+	}
+	result := &GrpcResponse{}
+	select {
+	case peer.fsm.adminStateCh <- ADMIN_STATE_UP:
+		log.WithFields(log.Fields{
+			"Topic": "Peer",
+			"Key":   peer.fsm.pConf.Config.NeighborAddress,
+		}).Debug("ADMIN_STATE_UP requested")
+	default:
+		log.Warning("previous request is still remaining. : ", peer.fsm.pConf.Config.NeighborAddress)
+		result.ResponseErr = fmt.Errorf("previous request is still remaining %v", peer.fsm.pConf.Config.NeighborAddress)
+	}
+	result.Data = &api.EnableNeighborResponse{}
+	return result
+}
+
+func (server *BgpServer) DisableNeighbor(req *Request) *Response {
+	peer, err1 := server.checkNeighborRequest(grpcReq)
+	if err1 != nil {
+		break
+	}
+	result := &GrpcResponse{}
+	select {
+	case peer.fsm.adminStateCh <- ADMIN_STATE_DOWN:
+		log.WithFields(log.Fields{
+			"Topic": "Peer",
+			"Key":   peer.fsm.pConf.Config.NeighborAddress,
+		}).Debug("ADMIN_STATE_DOWN requested")
+	default:
+		log.Warning("previous request is still remaining. : ", peer.fsm.pConf.Config.NeighborAddress)
+		result.ResponseErr = fmt.Errorf("previous request is still remaining %v", peer.fsm.pConf.Config.NeighborAddress)
+	}
+	result.Data = &api.DisableNeighborResponse{}
+	return result
+}
+
+func (server *BgpServer) GetDefinedSet(req *Request) *Response {
+	arg := req.Data.(*GetDefinedSetRequest)
 	typ := table.DefinedType(arg.Type)
 	set, ok := server.policy.DefinedSetMap[typ]
 	if !ok {
-		return &api.GetDefinedSetResponse{}, fmt.Errorf("invalid defined-set type: %d", typ)
+		return &GetDefinedSetResponse{}, fmt.Errorf("invalid defined-set type: %d", typ)
 	}
-	sets := make([]*api.DefinedSet, 0)
+	sets := make([]*DefinedSet, 0)
 	for _, s := range set {
 		sets = append(sets, s.ToApiStruct())
 	}
-	return &api.GetDefinedSetResponse{Sets: sets}, nil
+	return &Response{
+		Data: GetDefinedSetResponse{Sets: sets},
+	}
 }
-
+func (server *BgpServer) MonitorBestChanged(req *Request) chan Response {
+	server.broadcastReqs = append(server.broadcastReqs, req)
+	return req.ResponseCh
+}
+func (server *BgpServer) MonitorRib(req *Request) chan Response {
+	if req.Name != "" {
+		if _, err = server.checkNeighborRequest(grpcReq); err != nil {
+			return nil
+		}
+	}
+	w := server.watchers[WATCHER_GRPC_INCOMING]
+	go w.(*grpcIncomingWatcher).addRequest(req)
+	return req.ResponseCh
+}
+func (server *BgpServer) MonitorPeerState(req *Request) chan Response {
+	server.broadcastReqs = append(server.broadcastReqs, req)
+	return req.ResponseCh
+}
 func (server *BgpServer) handleAddNeighbor(c *config.Neighbor) ([]*SenderMsg, error) {
 	addr := c.Config.NeighborAddress
 	if _, y := server.neighborMap[addr]; y {
@@ -2496,134 +2104,34 @@ func (server *BgpServer) handleUpdateNeighbor(c *config.Neighbor) ([]*SenderMsg,
 	return msgs, policyUpdated, nil
 }
 
-func (server *BgpServer) handleAddNeighborRequest(grpcReq *GrpcRequest) ([]*SenderMsg, error) {
-	arg, ok := grpcReq.Data.(*api.AddNeighborRequest)
+func (server *BgpServer) AddNeighbor(req *Request) *Response {
+	var err error
+	arg, ok := req.Data.(*AddNeighborRequest)
 	if !ok {
-		return []*SenderMsg{}, fmt.Errorf("AddNeighborRequest type assertion failed")
+		return Response{
+			Data:        &AddNeighborResponse{},
+			ResponseErr: fmt.Errorf("AddNeighborRequest type assertion failed"),
+		}
 	} else {
-		apitoConfig := func(a *api.Peer) (*config.Neighbor, error) {
-			pconf := &config.Neighbor{}
-			if a.Conf != nil {
-				pconf.Config.NeighborAddress = a.Conf.NeighborAddress
-				pconf.Config.PeerAs = a.Conf.PeerAs
-				if a.Conf.LocalAs == 0 {
-					pconf.Config.LocalAs = server.bgpConfig.Global.Config.As
-				} else {
-					pconf.Config.LocalAs = a.Conf.LocalAs
-				}
-				if pconf.Config.PeerAs != pconf.Config.LocalAs {
-					pconf.Config.PeerType = config.PEER_TYPE_EXTERNAL
-				} else {
-					pconf.Config.PeerType = config.PEER_TYPE_INTERNAL
-				}
-				pconf.Config.AuthPassword = a.Conf.AuthPassword
-				pconf.Config.RemovePrivateAs = config.RemovePrivateAsOption(a.Conf.RemovePrivateAs)
-				pconf.Config.RouteFlapDamping = a.Conf.RouteFlapDamping
-				pconf.Config.SendCommunity = config.CommunityType(a.Conf.SendCommunity)
-				pconf.Config.Description = a.Conf.Description
-				pconf.Config.PeerGroup = a.Conf.PeerGroup
-				pconf.Config.NeighborAddress = a.Conf.NeighborAddress
-			}
-			if a.Timers != nil {
-				if a.Timers.Config != nil {
-					pconf.Timers.Config.ConnectRetry = float64(a.Timers.Config.ConnectRetry)
-					pconf.Timers.Config.HoldTime = float64(a.Timers.Config.HoldTime)
-					pconf.Timers.Config.KeepaliveInterval = float64(a.Timers.Config.KeepaliveInterval)
-					pconf.Timers.Config.MinimumAdvertisementInterval = float64(a.Timers.Config.MinimumAdvertisementInterval)
-				}
-			} else {
-				pconf.Timers.Config.ConnectRetry = float64(config.DEFAULT_CONNECT_RETRY)
-				pconf.Timers.Config.HoldTime = float64(config.DEFAULT_HOLDTIME)
-				pconf.Timers.Config.KeepaliveInterval = float64(config.DEFAULT_HOLDTIME / 3)
-			}
-			if a.RouteReflector != nil {
-				pconf.RouteReflector.Config.RouteReflectorClusterId = config.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
-				pconf.RouteReflector.Config.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
-			}
-			if a.RouteServer != nil {
-				pconf.RouteServer.Config.RouteServerClient = a.RouteServer.RouteServerClient
-			}
-			if a.ApplyPolicy != nil {
-				if a.ApplyPolicy.ImportPolicy != nil {
-					pconf.ApplyPolicy.Config.DefaultImportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ImportPolicy.Default)
-					for _, p := range a.ApplyPolicy.ImportPolicy.Policies {
-						pconf.ApplyPolicy.Config.ImportPolicyList = append(pconf.ApplyPolicy.Config.ImportPolicyList, p.Name)
-					}
-				}
-				if a.ApplyPolicy.ExportPolicy != nil {
-					pconf.ApplyPolicy.Config.DefaultExportPolicy = config.DefaultPolicyType(a.ApplyPolicy.ExportPolicy.Default)
-					for _, p := range a.ApplyPolicy.ExportPolicy.Policies {
-						pconf.ApplyPolicy.Config.ExportPolicyList = append(pconf.ApplyPolicy.Config.ExportPolicyList, p.Name)
-					}
-				}
-				if a.ApplyPolicy.InPolicy != nil {
-					pconf.ApplyPolicy.Config.DefaultInPolicy = config.DefaultPolicyType(a.ApplyPolicy.InPolicy.Default)
-					for _, p := range a.ApplyPolicy.InPolicy.Policies {
-						pconf.ApplyPolicy.Config.InPolicyList = append(pconf.ApplyPolicy.Config.InPolicyList, p.Name)
-					}
-				}
-			}
-			if a.Families != nil {
-				for _, family := range a.Families {
-					name, ok := bgp.AddressFamilyNameMap[bgp.RouteFamily(family)]
-					if !ok {
-						return pconf, fmt.Errorf("invalid address family: %d", family)
-					}
-					cAfiSafi := config.AfiSafi{
-						Config: config.AfiSafiConfig{
-							AfiSafiName: config.AfiSafiType(name),
-						},
-					}
-					pconf.AfiSafis = append(pconf.AfiSafis, cAfiSafi)
-				}
-			} else {
-				if net.ParseIP(a.Conf.NeighborAddress).To4() != nil {
-					pconf.AfiSafis = []config.AfiSafi{
-						config.AfiSafi{
-							Config: config.AfiSafiConfig{
-								AfiSafiName: "ipv4-unicast",
-							},
-						},
-					}
-				} else {
-					pconf.AfiSafis = []config.AfiSafi{
-						config.AfiSafi{
-							Config: config.AfiSafiConfig{
-								AfiSafiName: "ipv6-unicast",
-							},
-						},
-					}
-				}
-			}
-			if a.Transport != nil {
-				pconf.Transport.Config.LocalAddress = a.Transport.LocalAddress
-				pconf.Transport.Config.PassiveMode = a.Transport.PassiveMode
-			}
-			if a.EbgpMultihop != nil {
-				pconf.EbgpMultihop.Config.Enabled = a.EbgpMultihop.Enabled
-				pconf.EbgpMultihop.Config.MultihopTtl = uint8(a.EbgpMultihop.MultihopTtl)
-			}
-			return pconf, nil
+		server.handleAddNeighbor(arg.Peer)
+		return Response{
+			Data:        &api.AddNeighborResponse{},
+			ResponseErr: err,
 		}
-		c, err := apitoConfig(arg.Peer)
-		if err != nil {
-			return nil, err
-		}
-		return server.handleAddNeighbor(c)
 	}
 }
 
-func (server *BgpServer) handleDeleteNeighborRequest(grpcReq *GrpcRequest) ([]*SenderMsg, error) {
-	arg := grpcReq.Data.(*api.DeleteNeighborRequest)
-	return server.handleDelNeighbor(&config.Neighbor{
-		Config: config.NeighborConfig{
-			NeighborAddress: arg.Peer.Conf.NeighborAddress,
-		},
-	}, bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_PEER_DECONFIGURED)
+func (server *BgpServer) DeleteNeighbor(req *Request) *Response {
+	arg := req.Data.(*DeleteNeighborRequest)
+	msg, err := server.handleDelNeighbor(arg.Peer, bgp.BGP_ERROR_CEASE, bgp.BGP_ERROR_SUB_PEER_DECONFIGURED)
+	return &Response{
+		Data:        &DeleteNeighborResponse{},
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcAddDefinedSet(grpcReq *GrpcRequest) (*api.AddDefinedSetResponse, error) {
-	arg := grpcReq.Data.(*api.AddDefinedSetRequest)
+func (server *BgpServer) handleGrpcAddDefinedSet(req *Request) *Response {
+	arg := req.Data.(*AddDefinedSetRequest)
 	set := arg.Set
 	typ := table.DefinedType(set.Type)
 	name := set.Name
@@ -2642,11 +2150,14 @@ func (server *BgpServer) handleGrpcAddDefinedSet(grpcReq *GrpcRequest) (*api.Add
 	} else {
 		m[name] = s
 	}
-	return &api.AddDefinedSetResponse{}, err
+	return &Response{
+		ResponseErr: err,
+		Data:        &AddDefinedSetResponse{},
+	}
 }
 
-func (server *BgpServer) handleGrpcDeleteDefinedSet(grpcReq *GrpcRequest) (*api.DeleteDefinedSetResponse, error) {
-	arg := grpcReq.Data.(*api.DeleteDefinedSetRequest)
+func (server *BgpServer) GrpcDeleteDefinedSet(req *Request) *Response {
+	arg := req.Data.(*DeleteDefinedSetRequest)
 	set := arg.Set
 	typ := table.DefinedType(set.Type)
 	name := set.Name
@@ -2671,11 +2182,14 @@ func (server *BgpServer) handleGrpcDeleteDefinedSet(grpcReq *GrpcRequest) (*api.
 	} else {
 		err = d.Remove(s)
 	}
-	return &api.DeleteDefinedSetResponse{}, err
+	return &Response{
+		ResponseErr: err,
+		Data:        DeleteDefinedSetResponse{},
+	}
 }
 
-func (server *BgpServer) handleGrpcReplaceDefinedSet(grpcReq *GrpcRequest) (*api.ReplaceDefinedSetResponse, error) {
-	arg := grpcReq.Data.(*api.ReplaceDefinedSetRequest)
+func (server *BgpServer) ReplaceDefinedSet(req *Request) *Response {
+	arg := req.Data.(*ReplaceDefinedSetRequest)
 	set := arg.Set
 	typ := table.DefinedType(set.Type)
 	name := set.Name
@@ -2692,20 +2206,23 @@ func (server *BgpServer) handleGrpcReplaceDefinedSet(grpcReq *GrpcRequest) (*api
 	if err != nil {
 		return nil, err
 	}
-	return &api.ReplaceDefinedSetResponse{}, d.Replace(s)
+	return &Response{
+		ResponseErr: d.Replace(s),
+		Data:        &ReplaceDefinedSetResponse{},
+	}
 }
 
-func (server *BgpServer) handleGrpcGetStatement(grpcReq *GrpcRequest) (*api.GetStatementResponse, error) {
-	l := make([]*api.Statement, 0)
+func (server *BgpServer) handleGrpcGetStatement(req *Request) *Response {
+	l := make([]*Statement, 0)
 	for _, s := range server.policy.StatementMap {
 		l = append(l, s.ToApiStruct())
 	}
-	return &api.GetStatementResponse{Statements: l}, nil
+	return &GetStatementResponse{Statements: l}
 }
 
-func (server *BgpServer) handleGrpcAddStatement(grpcReq *GrpcRequest) (*api.AddStatementResponse, error) {
+func (server *BgpServer) handleGrpcAddStatement(req *Request) *Response {
 	var err error
-	arg := grpcReq.Data.(*api.AddStatementRequest)
+	arg := req.Data.(*AddStatementRequest)
 	s, err := table.NewStatementFromApiStruct(arg.Statement, server.policy.DefinedSetMap)
 	if err != nil {
 		return nil, err
@@ -2717,12 +2234,15 @@ func (server *BgpServer) handleGrpcAddStatement(grpcReq *GrpcRequest) (*api.AddS
 	} else {
 		m[name] = s
 	}
-	return &api.AddStatementResponse{}, err
+	return &Response{
+		Data:        &AddStatementResponse{},
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcDeleteStatement(grpcReq *GrpcRequest) (*api.DeleteStatementResponse, error) {
+func (server *BgpServer) handleGrpcDeleteStatement(req *Request) *Response {
 	var err error
-	arg := grpcReq.Data.(*api.DeleteStatementRequest)
+	arg := req.Data.(*DeleteStatementRequest)
 	s, err := table.NewStatementFromApiStruct(arg.Statement, server.policy.DefinedSetMap)
 	if err != nil {
 		return nil, err
@@ -2742,12 +2262,15 @@ func (server *BgpServer) handleGrpcDeleteStatement(grpcReq *GrpcRequest) (*api.D
 	} else {
 		err = fmt.Errorf("not found statement: %s", name)
 	}
-	return &api.DeleteStatementResponse{}, err
+	return Response{
+		Data:        &DeleteStatementResponse{},
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcReplaceStatement(grpcReq *GrpcRequest) (*api.ReplaceStatementResponse, error) {
+func (server *BgpServer) handleGrpcReplaceStatement(req *Request) *Response {
 	var err error
-	arg := grpcReq.Data.(*api.ReplaceStatementRequest)
+	arg := req.Data.(*ReplaceStatementRequest)
 	s, err := table.NewStatementFromApiStruct(arg.Statement, server.policy.DefinedSetMap)
 	if err != nil {
 		return nil, err
@@ -2759,15 +2282,20 @@ func (server *BgpServer) handleGrpcReplaceStatement(grpcReq *GrpcRequest) (*api.
 	} else {
 		err = fmt.Errorf("not found statement: %s", name)
 	}
-	return &api.ReplaceStatementResponse{}, err
+	return &Response{
+		Data:        &ReplaceStatementResponse{},
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcGetPolicy(grpcReq *GrpcRequest) (*api.GetPolicyResponse, error) {
-	policies := make([]*api.Policy, 0, len(server.policy.PolicyMap))
+func (server *BgpServer) GrpcGetPolicy(req *Request) *Response {
+	policies := make([]*Policy, 0, len(server.policy.PolicyMap))
 	for _, s := range server.policy.PolicyMap {
 		policies = append(policies, s.ToApiStruct())
 	}
-	return &api.GetPolicyResponse{Policies: policies}, nil
+	return &Response{
+		Data: &GetPolicyResponse{Policies: policies},
+	}
 }
 
 func (server *BgpServer) policyInUse(x *table.Policy) bool {
@@ -2790,11 +2318,11 @@ func (server *BgpServer) policyInUse(x *table.Policy) bool {
 	return false
 }
 
-func (server *BgpServer) handleGrpcAddPolicy(grpcReq *GrpcRequest) (*api.AddPolicyResponse, error) {
+func (server *BgpServer) handleGrpcAddPolicy(req *Request) *Response {
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	rsp := &api.AddPolicyResponse{}
-	arg := grpcReq.Data.(*api.AddPolicyRequest)
+	rsp := &AddPolicyResponse{}
+	arg := req.Data.(*AddPolicyRequest)
 	x, err := table.NewPolicyFromApiStruct(arg.Policy, server.policy.DefinedSetMap)
 	if err != nil {
 		return rsp, err
@@ -2818,14 +2346,17 @@ func (server *BgpServer) handleGrpcAddPolicy(grpcReq *GrpcRequest) (*api.AddPoli
 	} else {
 		pMap[name] = x
 	}
-	return &api.AddPolicyResponse{}, err
+	return &Response{
+		Data:        &AddPolicyResponse{},
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcDeletePolicy(grpcReq *GrpcRequest) (*api.DeletePolicyResponse, error) {
+func (server *BgpServer) handleGrpcDeletePolicy(req *Request) *Response {
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	rsp := &api.DeletePolicyResponse{}
-	arg := grpcReq.Data.(*api.DeletePolicyRequest)
+	rsp := &DeletePolicyResponse{}
+	arg := req.Data.(*DeletePolicyRequest)
 	x, err := table.NewPolicyFromApiStruct(arg.Policy, server.policy.DefinedSetMap)
 	if err != nil {
 		return rsp, err
@@ -2860,14 +2391,17 @@ func (server *BgpServer) handleGrpcDeletePolicy(grpcReq *GrpcRequest) (*api.Dele
 			}
 		}
 	}
-	return rsp, err
+	return &Response{
+		Data:        rsp,
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcReplacePolicy(grpcReq *GrpcRequest) (*api.ReplacePolicyResponse, error) {
+func (server *BgpServer) handleGrpcReplacePolicy(req *Request) *Response {
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	rsp := &api.ReplacePolicyResponse{}
-	arg := grpcReq.Data.(*api.ReplacePolicyRequest)
+	rsp := &ReplacePolicyResponse{}
+	arg := req.Data.(*ReplacePolicyRequest)
 	x, err := table.NewPolicyFromApiStruct(arg.Policy, server.policy.DefinedSetMap)
 	if err != nil {
 		return rsp, err
@@ -2904,21 +2438,24 @@ func (server *BgpServer) handleGrpcReplacePolicy(grpcReq *GrpcRequest) (*api.Rep
 			}
 		}
 	}
-	return rsp, err
+	return &Response{
+		Data:        rsp,
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) getPolicyInfo(a *api.PolicyAssignment) (string, table.PolicyDirection, error) {
+func (server *BgpServer) getPolicyInfo(a *PolicyAssignment) (string, table.PolicyDirection, error) {
 	switch a.Resource {
-	case api.Resource_GLOBAL:
+	case Resource_GLOBAL:
 		switch a.Type {
-		case api.PolicyType_IMPORT:
+		case PolicyType_IMPORT:
 			return table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_IMPORT, nil
-		case api.PolicyType_EXPORT:
+		case PolicyType_EXPORT:
 			return table.GLOBAL_RIB_NAME, table.POLICY_DIRECTION_EXPORT, nil
 		default:
 			return "", table.POLICY_DIRECTION_NONE, fmt.Errorf("invalid policy type")
 		}
-	case api.Resource_LOCAL:
+	case Resource_LOCAL:
 		peer, ok := server.neighborMap[a.Name]
 		if !ok {
 			return "", table.POLICY_DIRECTION_NONE, fmt.Errorf("not found peer %s", a.Name)
@@ -2927,11 +2464,11 @@ func (server *BgpServer) getPolicyInfo(a *api.PolicyAssignment) (string, table.P
 			return "", table.POLICY_DIRECTION_NONE, fmt.Errorf("non-rs-client peer %s doesn't have per peer policy", a.Name)
 		}
 		switch a.Type {
-		case api.PolicyType_IN:
+		case PolicyType_IN:
 			return peer.ID(), table.POLICY_DIRECTION_IN, nil
-		case api.PolicyType_IMPORT:
+		case PolicyType_IMPORT:
 			return peer.ID(), table.POLICY_DIRECTION_IMPORT, nil
-		case api.PolicyType_EXPORT:
+		case PolicyType_EXPORT:
 			return peer.ID(), table.POLICY_DIRECTION_EXPORT, nil
 		default:
 			return "", table.POLICY_DIRECTION_NONE, fmt.Errorf("invalid policy type")
@@ -2942,35 +2479,43 @@ func (server *BgpServer) getPolicyInfo(a *api.PolicyAssignment) (string, table.P
 
 }
 
-func (server *BgpServer) handleGrpcGetPolicyAssignment(grpcReq *GrpcRequest) (*api.GetPolicyAssignmentResponse, error) {
-	rsp := &api.GetPolicyAssignmentResponse{}
-	id, dir, err := server.getPolicyInfo(grpcReq.Data.(*api.GetPolicyAssignmentRequest).Assignment)
+func (server *BgpServer) handleGrpcGetPolicyAssignment(req *Request) *Response {
+	rsp := &GetPolicyAssignmentResponse{}
+	id, dir, err := server.getPolicyInfo(req.Data.(*GetPolicyAssignmentRequest).Assignment)
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
-	rsp.Assignment = &api.PolicyAssignment{
+	rsp.Assignment = &PolicyAssignment{
 		Default: server.policy.GetDefaultPolicy(id, dir).ToApiStruct(),
 	}
 	ps := server.policy.GetPolicy(id, dir)
-	rsp.Assignment.Policies = make([]*api.Policy, 0, len(ps))
+	rsp.Assignment.Policies = make([]*Policy, 0, len(ps))
 	for _, x := range ps {
 		rsp.Assignment.Policies = append(rsp.Assignment.Policies, x.ToApiStruct())
 	}
-	return rsp, nil
+	return &Response{
+		Data: rsp,
+	}
 }
 
-func (server *BgpServer) handleGrpcAddPolicyAssignment(grpcReq *GrpcRequest) (*api.AddPolicyAssignmentResponse, error) {
+func (server *BgpServer) AddPolicyAssignment(req *Request) *Response {
 	var err error
 	var dir table.PolicyDirection
 	var id string
-	rsp := &api.AddPolicyAssignmentResponse{}
+	rsp := &AddPolicyAssignmentResponse{}
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	arg := grpcReq.Data.(*api.AddPolicyAssignmentRequest)
+	arg := req.Data.(*AddPolicyAssignmentRequest)
 	assignment := arg.Assignment
 	id, dir, err = server.getPolicyInfo(assignment)
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
 	ps := make([]*table.Policy, 0, len(assignment.Policies))
 	seen := make(map[string]bool)
@@ -3000,40 +2545,55 @@ func (server *BgpServer) handleGrpcAddPolicyAssignment(grpcReq *GrpcRequest) (*a
 		err = server.policy.SetPolicy(id, dir, ps)
 	}
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
 
 	switch assignment.Default {
-	case api.RouteAction_ACCEPT:
+	case RouteAction_ACCEPT:
 		err = server.policy.SetDefaultPolicy(id, dir, table.ROUTE_TYPE_ACCEPT)
-	case api.RouteAction_REJECT:
+	case RouteAction_REJECT:
 		err = server.policy.SetDefaultPolicy(id, dir, table.ROUTE_TYPE_REJECT)
 	}
-	return rsp, err
+	return &Response{
+		Data:        rsp,
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcDeletePolicyAssignment(grpcReq *GrpcRequest) (*api.DeletePolicyAssignmentResponse, error) {
+func (server *BgpServer) handleGrpcDeletePolicyAssignment(req *Request) *Response {
 	var err error
 	var dir table.PolicyDirection
 	var id string
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	rsp := &api.DeletePolicyAssignmentResponse{}
-	arg := grpcReq.Data.(*api.DeletePolicyAssignmentRequest)
+	rsp := &DeletePolicyAssignmentResponse{}
+	arg := req.Data.(*DeletePolicyAssignmentRequest)
 	assignment := arg.Assignment
 	id, dir, err = server.getPolicyInfo(assignment)
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
 	ps := make([]*table.Policy, 0, len(assignment.Policies))
 	seen := make(map[string]bool)
 	for _, x := range assignment.Policies {
 		p, ok := server.policy.PolicyMap[x.Name]
 		if !ok {
-			return rsp, fmt.Errorf("not found policy %s", x.Name)
+			return &Response{
+				Data:        rsp,
+				ResponseErr: fmt.Errorf("not found policy %s", x.Name),
+			}
 		}
 		if seen[x.Name] {
-			return rsp, fmt.Errorf("duplicated policy %s", x.Name)
+			return &Response{
+				Data:        rsp,
+				ResponseErr: fmt.Errorf("duplicated policy %s", x.Name),
+			}
 		}
 		seen[x.Name] = true
 		ps = append(ps, p)
@@ -3043,7 +2603,10 @@ func (server *BgpServer) handleGrpcDeletePolicyAssignment(grpcReq *GrpcRequest) 
 	if arg.All {
 		err = server.policy.SetPolicy(id, dir, nil)
 		if err != nil {
-			return rsp, err
+			return &Response{
+				Data:        rsp,
+				ResponseErr: err,
+			}
 		}
 		err = server.policy.SetDefaultPolicy(id, dir, table.ROUTE_TYPE_NONE)
 	} else {
@@ -3062,31 +2625,43 @@ func (server *BgpServer) handleGrpcDeletePolicyAssignment(grpcReq *GrpcRequest) 
 		}
 		err = server.policy.SetPolicy(id, dir, n)
 	}
-	return rsp, err
+	return &Response{
+		Data:        rsp,
+		ResponseErr: err,
+	}
 }
 
-func (server *BgpServer) handleGrpcReplacePolicyAssignment(grpcReq *GrpcRequest) (*api.ReplacePolicyAssignmentResponse, error) {
+func (server *BgpServer) ReplacePolicyAssignment(req *Request) *Response {
 	var err error
 	var dir table.PolicyDirection
 	var id string
 	policyMutex.Lock()
 	defer policyMutex.Unlock()
-	rsp := &api.ReplacePolicyAssignmentResponse{}
-	arg := grpcReq.Data.(*api.ReplacePolicyAssignmentRequest)
+	rsp := &ReplacePolicyAssignmentResponse{}
+	arg := req.Data.(*ReplacePolicyAssignmentRequest)
 	assignment := arg.Assignment
 	id, dir, err = server.getPolicyInfo(assignment)
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
 	ps := make([]*table.Policy, 0, len(assignment.Policies))
 	seen := make(map[string]bool)
 	for _, x := range assignment.Policies {
 		p, ok := server.policy.PolicyMap[x.Name]
 		if !ok {
-			return rsp, fmt.Errorf("not found policy %s", x.Name)
+			return &Response{
+				Data:        rsp,
+				ResponseErr: fmt.Errorf("not found policy %s", x.Name),
+			}
 		}
 		if seen[x.Name] {
-			return rsp, fmt.Errorf("duplicated policy %s", x.Name)
+			return &Response{
+				Data:        rsp,
+				ResponseErr: fmt.Errorf("duplicated policy %s", x.Name),
+			}
 		}
 		seen[x.Name] = true
 		ps = append(ps, p)
@@ -3094,30 +2669,61 @@ func (server *BgpServer) handleGrpcReplacePolicyAssignment(grpcReq *GrpcRequest)
 	server.policy.GetPolicy(id, dir)
 	err = server.policy.SetPolicy(id, dir, ps)
 	if err != nil {
-		return rsp, err
+		return &Response{
+			Data:        rsp,
+			ResponseErr: err,
+		}
 	}
 	switch assignment.Default {
-	case api.RouteAction_ACCEPT:
+	case RouteAction_ACCEPT:
 		err = server.policy.SetDefaultPolicy(id, dir, table.ROUTE_TYPE_ACCEPT)
-	case api.RouteAction_REJECT:
+	case RouteAction_REJECT:
 		err = server.policy.SetDefaultPolicy(id, dir, table.ROUTE_TYPE_REJECT)
 	}
-	return rsp, err
+	return &Response{
+		Data:        rsp,
+		ResponseErr: err,
+	}
 }
-
-func grpcDone(grpcReq *GrpcRequest, e error) {
-	result := &GrpcResponse{
+func (server *BgpServer) GetServer(req *Request) *Response {
+	g := server.bgpConfig.Global
+	return &Response{
+		Data: &GetServerResponse{
+			Global: &Global{
+				As:              g.Config.As,
+				RouterId:        g.Config.RouterId,
+				ListenPort:      g.Config.Port,
+				ListenAddresses: g.Config.LocalAddressList,
+				MplsLabelMin:    g.MplsLabelRange.MinLabel,
+				MplsLabelMax:    g.MplsLabelRange.MaxLabel,
+			},
+		},
+	}
+}
+func (server *BgpServer) StartServer(req *Request) *Response {
+	err := server.handleModConfig(Req)
+	return &Response{
+		ResponseErr: err,
+		Data:        &StartServerResponse{},
+	}
+}
+func (server *BgpServer) StopServer(req *Request) *Response {
+	err := server.handleModConfig(req)
+	return &Response{
+		ResponseErr: err,
+		Data:        &StopServerResponse{},
+	}
+}
+func responseDone(req *Request, e error) *Response {
+	result := &Response{
 		ResponseErr: e,
 	}
-	grpcReq.ResponseCh <- result
-	close(grpcReq.ResponseCh)
+	return result
 }
-
-func (server *BgpServer) handleEnableMrtRequest(grpcReq *GrpcRequest) {
-	arg := grpcReq.Data.(*api.EnableMrtRequest)
+func (server *BgpServer) EnableMrtRequest(req *Request) *Response {
+	arg := req.Data.(*EnableMrtRequest)
 	if _, y := server.watchers[WATCHER_MRT]; y {
-		grpcDone(grpcReq, fmt.Errorf("already enabled"))
-		return
+		return responceDone(req, fmt.Errorf("already enabled"))
 	}
 	if arg.Interval != 0 && arg.Interval < 30 {
 		log.Info("minimum mrt dump interval is 30 seconds")
@@ -3127,32 +2733,29 @@ func (server *BgpServer) handleEnableMrtRequest(grpcReq *GrpcRequest) {
 	if err == nil {
 		server.watchers[WATCHER_MRT] = w
 	}
-	grpcReq.ResponseCh <- &GrpcResponse{
+	return &Response{
 		ResponseErr: err,
-		Data:        &api.EnableMrtResponse{},
-	}
-	close(grpcReq.ResponseCh)
+		Data:        &EnableMrtResponse{},
+	}, nil
 }
 
-func (server *BgpServer) handleDisableMrtRequest(grpcReq *GrpcRequest) {
+func (server *BgpServer) DisableMrtRequest(req *Request) *Response {
 	w, y := server.watchers[WATCHER_MRT]
 	if !y {
-		grpcDone(grpcReq, fmt.Errorf("not enabled yet"))
-		return
+		return responceDone(req, fmt.Errorf("not enabled yet"))
 	}
 
 	delete(server.watchers, WATCHER_MRT)
 	w.stop()
-	grpcReq.ResponseCh <- &GrpcResponse{
-		Data: &api.DisableMrtResponse{},
+	return &Response{
+		Data: &DisableMrtResponse{},
 	}
-	close(grpcReq.ResponseCh)
 }
 
-func (server *BgpServer) handleAddBmp(grpcReq *GrpcRequest) {
+func (server *BgpServer) AddBmp(req *Request) *Response {
 	var c *config.BmpServerConfig
-	switch arg := grpcReq.Data.(type) {
-	case *api.AddBmpRequest:
+	switch arg := req.Data.(type) {
+	case *AddBmpRequest:
 		c = &config.BmpServerConfig{
 			Address: arg.Address,
 			Port:    arg.Port,
@@ -3169,17 +2772,16 @@ func (server *BgpServer) handleAddBmp(grpcReq *GrpcRequest) {
 	}
 
 	err := w.(*bmpWatcher).addServer(*c)
-	grpcReq.ResponseCh <- &GrpcResponse{
+	return <-&Response{
 		ResponseErr: err,
-		Data:        &api.AddBmpResponse{},
+		Data:        &AddBmpResponse{},
 	}
-	close(grpcReq.ResponseCh)
 }
 
-func (server *BgpServer) handleDeleteBmp(grpcReq *GrpcRequest) {
+func (server *BgpServer) DeleteBmp(req *Request) *Response {
 	var c *config.BmpServerConfig
-	switch arg := grpcReq.Data.(type) {
-	case *api.DeleteBmpRequest:
+	switch arg := req.Data.(type) {
+	case *DeleteBmpRequest:
 		c = &config.BmpServerConfig{
 			Address: arg.Address,
 			Port:    arg.Port,
@@ -3190,18 +2792,17 @@ func (server *BgpServer) handleDeleteBmp(grpcReq *GrpcRequest) {
 
 	if w, y := server.watchers[WATCHER_BMP]; y {
 		err := w.(*bmpWatcher).deleteServer(*c)
-		grpcReq.ResponseCh <- &GrpcResponse{
+		return &Response{
 			ResponseErr: err,
-			Data:        &api.DeleteBmpResponse{},
+			Data:        &DeleteBmpResponse{},
 		}
-		close(grpcReq.ResponseCh)
 	} else {
-		grpcDone(grpcReq, fmt.Errorf("bmp not configured"))
+		return responceDone(req, fmt.Errorf("bmp not configured"))
 	}
 }
 
-func (server *BgpServer) handleValidateRib(grpcReq *GrpcRequest) {
-	arg := grpcReq.Data.(*api.ValidateRibRequest)
+func (server *BgpServer) handleValidateRib(req *Request) *Response {
+	arg := req.Data.(*ValidateRibRequest)
 	for _, rf := range server.globalRib.GetRFlist() {
 		if t, ok := server.globalRib.Tables[rf]; ok {
 			dsts := t.GetDestinations()
@@ -3216,35 +2817,38 @@ func (server *BgpServer) handleValidateRib(grpcReq *GrpcRequest) {
 			}
 		}
 	}
-	result := &GrpcResponse{
-		Data: &api.ValidateRibResponse{},
+	return &Response{
+		Data: &ValidateRibResponse{},
 	}
-	grpcReq.ResponseCh <- result
-	close(grpcReq.ResponseCh)
 }
 
-func (server *BgpServer) handleModRpki(grpcReq *GrpcRequest) {
-	done := func(grpcReq *GrpcRequest, data interface{}, e error) {
-		result := &GrpcResponse{
-			ResponseErr: e,
-			Data:        data,
-		}
-		grpcReq.ResponseCh <- result
-		close(grpcReq.ResponseCh)
+func (server *BgpServer) handleModRpki(req *Request, data interface{}, e error) *Response {
+	return &Response{
+		ResponseErr: e,
+		Data:        data,
 	}
-
-	switch arg := grpcReq.Data.(type) {
-	case *api.AddRpkiRequest:
-		done(grpcReq, &api.AddRpkiResponse{}, server.roaManager.AddServer(net.JoinHostPort(arg.Address, strconv.Itoa(int(arg.Port))), arg.Lifetime))
-	case *api.DeleteRpkiRequest:
-		done(grpcReq, &api.DeleteRpkiResponse{}, server.roaManager.DeleteServer(arg.Address))
-	case *api.EnableRpkiRequest:
-		done(grpcReq, &api.EnableRpkiResponse{}, server.roaManager.Enable(arg.Address))
-	case *api.DisableRpkiRequest:
-		done(grpcReq, &api.DisableRpkiResponse{}, server.roaManager.Disable(arg.Address))
-	case *api.ResetRpkiRequest:
-		done(grpcReq, &api.ResetRpkiResponse{}, server.roaManager.Reset(arg.Address))
-	case *api.SoftResetRpkiRequest:
-		done(grpcReq, &api.SoftResetRpkiResponse{}, server.roaManager.SoftReset(arg.Address))
-	}
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &AddRpkiResponse{}, server.roaManager.AddServer(net.JoinHostPort(arg.Address, strconv.Itoa(int(arg.Port))), arg.Lifetime))
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &DeleteRpkiResponse{}, server.roaManager.DeleteServer(arg.Address))
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &EnableRpkiResponse{}, server.roaManager.Enable(arg.Address))
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &DisableRpkiResponse{}, server.roaManager.Disable(arg.Address))
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &ResetRpkiResponse{}, server.roaManager.Reset(arg.Address))
+}
+func (server *BgpServer) AddRpki(req *Request) *Response {
+	return handleModRpki(req, &SoftResetRpkiResponse{}, server.roaManager.SoftReset(arg.Address))
+}
+func (server *BgpServer) GetRpki(req *Request) *Response {
+	return server.roaManager.GetRpki(req)
+}
+func (server *BgpServer) GetRoa(req *Request) *Response {
+	return server.roaManager.GetRpki(req)
 }
