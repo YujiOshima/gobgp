@@ -16,7 +16,7 @@
 package table
 
 import (
-	api "github.com/osrg/gobgp/api"
+	api "github.com/osrg/gobgp/libapi"
 	"github.com/osrg/gobgp/packet/bgp"
 )
 

@@ -16,8 +16,8 @@
 package server
 
 import (
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
+	api "github.com/osrg/gobgp/libapi"
 	"github.com/osrg/gobgp/table"
 	"github.com/stretchr/testify/assert"
 	"testing"

@@ -25,8 +25,8 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/armon/go-radix"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
+	api "github.com/osrg/gobgp/libapi"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/packet/rtr"
 	"github.com/osrg/gobgp/table"
@@ -437,9 +437,9 @@ func (c *roaManager) handleRTRMsg(client *roaClient, state *config.RpkiServerSta
 	}
 }
 
-func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
+func (c *roaManager) handleGRPC(grpcReq *api.Request) *api.Response {
 	switch grpcReq.RequestType {
-	case REQ_GET_RPKI:
+	case api.REQ_GET_RPKI:
 		f := func(tree *radix.Tree) (map[string]uint32, map[string]uint32) {
 			records := make(map[string]uint32)
 			prefixes := make(map[string]uint32)
@@ -510,10 +510,10 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 			}
 			l = append(l, rpki)
 		}
-		return &GrpcResponse{Data: &api.GetRpkiResponse{Servers: l}}
-	case REQ_ROA:
+		return &api.Response{Data: &api.GetRpkiResponse{Servers: l}}
+	case api.REQ_ROA:
 		if len(c.clientMap) == 0 {
-			return &GrpcResponse{
+			return &api.Response{
 				ResponseErr: fmt.Errorf("RPKI server isn't configured."),
 				Data:        &api.GetRoaResponse{},
 			}
@@ -544,7 +544,7 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 				})
 			}
 		}
-		return &GrpcResponse{Data: &api.GetRoaResponse{Roas: l}}
+		return &api.Response{Data: &api.GetRoaResponse{Roas: l}}
 	}
 	return nil
 }

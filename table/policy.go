@@ -26,8 +26,8 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/armon/go-radix"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
+	api "github.com/osrg/gobgp/libapi"
 	"github.com/osrg/gobgp/packet/bgp"
 )
 

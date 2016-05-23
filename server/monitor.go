@@ -16,7 +16,7 @@
 package server
 
 import (
-	api "github.com/osrg/gobgp/api"
+	api "github.com/osrg/gobgp/libapi"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/table"
 	"gopkg.in/tomb.v2"
@@ -25,8 +25,8 @@ import (
 type grpcIncomingWatcher struct {
 	t     tomb.Tomb
 	ch    chan watcherEvent
-	ctlCh chan *GrpcRequest
-	reqs  []*GrpcRequest
+	ctlCh chan *api.Request
+	reqs  []*api.Request
 }
 
 func (w *grpcIncomingWatcher) notify(t watcherEventType) chan watcherEvent {
@@ -73,8 +73,8 @@ func (w *grpcIncomingWatcher) loop() error {
 		case ev := <-w.ch:
 			msg := ev.(*watcherEventUpdateMsg)
 			for _, path := range msg.pathList {
-				remains := make([]*GrpcRequest, 0, len(w.reqs))
-				result := &GrpcResponse{
+				remains := make([]*api.Request, 0, len(w.reqs))
+				result := &api.Response{
 					Data: &api.Destination{
 						Prefix: path.GetNlri().String(),
 						Paths:  []*api.Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
@@ -105,7 +105,7 @@ func (w *grpcIncomingWatcher) restart(string) error {
 	return nil
 }
 
-func (w *grpcIncomingWatcher) addRequest(req *GrpcRequest) error {
+func (w *grpcIncomingWatcher) addRequest(req *api.Request) error {
 	w.ctlCh <- req
 	return nil
 }
@@ -113,8 +113,8 @@ func (w *grpcIncomingWatcher) addRequest(req *GrpcRequest) error {
 func newGrpcIncomingWatcher() (*grpcIncomingWatcher, error) {
 	w := &grpcIncomingWatcher{
 		ch:    make(chan watcherEvent),
-		ctlCh: make(chan *GrpcRequest),
-		reqs:  make([]*GrpcRequest, 0, 16),
+		ctlCh: make(chan *api.Request),
+		reqs:  make([]*api.Request, 0, 16),
 	}
 	w.t.Go(w.loop)
 	return w, nil
