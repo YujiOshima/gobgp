@@ -25,7 +25,6 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/armon/go-radix"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/packet/rtr"
@@ -77,21 +76,21 @@ func (r *ROA) Equal(roa *ROA) bool {
 	return false
 }
 
-func (r *ROA) toApiStruct() *api.Roa {
+func (r *ROA) toApiStruct() *ApiRoa {
 	host, port, _ := net.SplitHostPort(r.Src)
-	return &api.Roa{
+	return &ApiRoa{
 		As:        r.AS,
 		Maxlen:    uint32(r.MaxLen),
 		Prefixlen: uint32(r.Prefix.Length),
 		Prefix:    r.Prefix.Prefix.String(),
-		Conf: &api.RPKIConf{
+		Conf: &RPKIConf{
 			Address:    host,
 			RemotePort: port,
 		},
 	}
 }
 
-type roas []*api.Roa
+type roas []*ApiRoa
 
 func (r roas) Len() int {
 	return len(r)
@@ -465,7 +464,7 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 		recordsV4, prefixesV4 := f(c.Roas[bgp.RF_IPv4_UC])
 		recordsV6, prefixesV6 := f(c.Roas[bgp.RF_IPv6_UC])
 
-		l := make([]*api.Rpki, 0, len(c.clientMap))
+		l := make([]*Rpki, 0, len(c.clientMap))
 		for _, client := range c.clientMap {
 			state := client.state
 			addr, port, _ := net.SplitHostPort(client.host)
@@ -483,12 +482,12 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 				return 0
 			}
 
-			rpki := &api.Rpki{
-				Conf: &api.RPKIConf{
+			rpki := &Rpki{
+				Conf: &RPKIConf{
 					Address:    addr,
 					RemotePort: port,
 				},
-				State: &api.RPKIState{
+				State: &RPKIState{
 					Uptime:        state.Uptime,
 					Downtime:      state.Downtime,
 					Up:            up,
@@ -510,12 +509,12 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 			}
 			l = append(l, rpki)
 		}
-		return &GrpcResponse{Data: &api.GetRpkiResponse{Servers: l}}
+		return &GrpcResponse{Data: &GetRpkiResponse{Servers: l}}
 	case REQ_ROA:
 		if len(c.clientMap) == 0 {
 			return &GrpcResponse{
 				ResponseErr: fmt.Errorf("RPKI server isn't configured."),
-				Data:        &api.GetRoaResponse{},
+				Data:        &GetRoaResponse{},
 			}
 		}
 		var rfList []bgp.RouteFamily
@@ -527,7 +526,7 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 		default:
 			rfList = []bgp.RouteFamily{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC}
 		}
-		l := make([]*api.Roa, 0)
+		l := make([]*ApiRoa, 0)
 		for _, rf := range rfList {
 			if tree, ok := c.Roas[rf]; ok {
 				tree.Walk(func(s string, v interface{}) bool {
@@ -544,7 +543,7 @@ func (c *roaManager) handleGRPC(grpcReq *GrpcRequest) *GrpcResponse {
 				})
 			}
 		}
-		return &GrpcResponse{Data: &api.GetRoaResponse{Roas: l}}
+		return &GrpcResponse{Data: &GetRoaResponse{Roas: l}}
 	}
 	return nil
 }

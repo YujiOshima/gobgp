@@ -19,9 +19,9 @@ import (
 	"bytes"
 	"fmt"
 	log "github.com/Sirupsen/logrus"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
+	server "github.com/osrg/gobgp/server"
 	"math"
 	"net"
 	"sort"
@@ -256,7 +256,7 @@ func (path *Path) IsIBGP() bool {
 	return path.GetSource().AS == path.GetSource().LocalAS
 }
 
-func (path *Path) ToApiStruct(id string) *api.Path {
+func (path *Path) ToApiStruct(id string) *server.ApiPath {
 	nlri := path.GetNlri()
 	n, _ := nlri.Serialize()
 	family := uint32(bgp.AfiSafiToRouteFamily(nlri.AFI(), nlri.SAFI()))
@@ -268,7 +268,7 @@ func (path *Path) ToApiStruct(id string) *api.Path {
 		}
 		return ret
 	}(path.GetPathAttrs())
-	return &api.Path{
+	return &server.ApiPath{
 		Nlri:           n,
 		Pattrs:         pattrs,
 		Age:            path.OriginInfo().timestamp.Unix(),

@@ -16,8 +16,8 @@
 package table
 
 import (
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/packet/bgp"
+	server "github.com/osrg/gobgp/server"
 )
 
 type Vrf struct {
@@ -28,7 +28,7 @@ type Vrf struct {
 	LabelMap map[string]uint32
 }
 
-func (v *Vrf) ToApiStruct() *api.Vrf {
+func (v *Vrf) ToApiStruct() *server.Vrf {
 	f := func(rts []bgp.ExtendedCommunityInterface) [][]byte {
 		ret := make([][]byte, 0, len(rts))
 		for _, rt := range rts {
@@ -38,7 +38,7 @@ func (v *Vrf) ToApiStruct() *api.Vrf {
 		return ret
 	}
 	rd, _ := v.Rd.Serialize()
-	return &api.Vrf{
+	return &server.Vrf{
 		Name:     v.Name,
 		Rd:       rd,
 		ImportRt: f(v.ImportRt),

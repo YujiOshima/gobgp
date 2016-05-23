@@ -16,7 +16,6 @@
 package server
 
 import (
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/table"
 	"gopkg.in/tomb.v2"
@@ -44,7 +43,7 @@ func (w *grpcIncomingWatcher) watchingEventTypes() []watcherEventType {
 	pre := false
 	post := false
 	for _, req := range w.reqs {
-		if req.Data.(*api.Table).PostPolicy {
+		if req.Data.(*ApiTable).PostPolicy {
 			post = true
 		} else {
 			pre = true
@@ -75,9 +74,9 @@ func (w *grpcIncomingWatcher) loop() error {
 			for _, path := range msg.pathList {
 				remains := make([]*GrpcRequest, 0, len(w.reqs))
 				result := &GrpcResponse{
-					Data: &api.Destination{
+					Data: &ApiDestination{
 						Prefix: path.GetNlri().String(),
-						Paths:  []*api.Path{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
+						Paths:  []*ApiPath{path.ToApiStruct(table.GLOBAL_RIB_NAME)},
 					},
 				}
 				for _, req := range w.reqs {

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"github.com/eapache/channels"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
 	"github.com/osrg/gobgp/table"
@@ -367,7 +366,7 @@ func (peer *Peer) MarshalJSON() ([]byte, error) {
 	return json.Marshal(peer.ToApiStruct())
 }
 
-func (peer *Peer) ToApiStruct() *api.Peer {
+func (peer *Peer) ToApiStruct() *ApiPeer {
 
 	f := peer.fsm
 	c := f.pConf
@@ -387,11 +386,11 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		localCap = append(localCap, buf)
 	}
 
-	prefixLimits := make([]*api.PrefixLimit, 0, len(peer.fsm.pConf.AfiSafis))
+	prefixLimits := make([]*PrefixLimit, 0, len(peer.fsm.pConf.AfiSafis))
 	for _, family := range peer.fsm.pConf.AfiSafis {
 		if c := family.PrefixLimit.Config; c.MaxPrefixes > 0 {
 			k, _ := bgp.GetRouteFamily(string(family.Config.AfiSafiName))
-			prefixLimits = append(prefixLimits, &api.PrefixLimit{
+			prefixLimits = append(prefixLimits, &PrefixLimit{
 				Family:               uint32(k),
 				MaxPrefixes:          c.MaxPrefixes,
 				ShutdownThresholdPct: uint32(c.ShutdownThresholdPct),
@@ -399,7 +398,7 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		}
 	}
 
-	conf := &api.PeerConf{
+	conf := &ApiPeerConf{
 		NeighborAddress:  c.Config.NeighborAddress,
 		Id:               peer.fsm.peerInfo.ID.To4().String(),
 		PeerAs:           c.Config.PeerAs,
@@ -438,24 +437,24 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		downtime = timer.State.Downtime
 	}
 
-	timerconf := &api.TimersConfig{
+	timerconf := &TimersConfig{
 		ConnectRetry:      uint64(timer.Config.ConnectRetry),
 		HoldTime:          uint64(timer.Config.HoldTime),
 		KeepaliveInterval: uint64(timer.Config.KeepaliveInterval),
 	}
 
-	timerstate := &api.TimersState{
+	timerstate := &TimersState{
 		KeepaliveInterval:  uint64(timer.State.KeepaliveInterval),
 		NegotiatedHoldTime: uint64(timer.State.NegotiatedHoldTime),
 		Uptime:             uint64(uptime),
 		Downtime:           uint64(downtime),
 	}
 
-	apitimer := &api.Timers{
+	apitimer := &Timers{
 		Config: timerconf,
 		State:  timerstate,
 	}
-	msgrcv := &api.Message{
+	msgrcv := &Message{
 		NOTIFICATION: s.Messages.Received.Notification,
 		UPDATE:       s.Messages.Received.Update,
 		OPEN:         s.Messages.Received.Open,
@@ -464,7 +463,7 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		DISCARDED:    s.Messages.Received.Discarded,
 		TOTAL:        s.Messages.Received.Total,
 	}
-	msgsnt := &api.Message{
+	msgsnt := &Message{
 		NOTIFICATION: s.Messages.Sent.Notification,
 		UPDATE:       s.Messages.Sent.Update,
 		OPEN:         s.Messages.Sent.Open,
@@ -473,11 +472,11 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		DISCARDED:    s.Messages.Sent.Discarded,
 		TOTAL:        s.Messages.Sent.Total,
 	}
-	msg := &api.Messages{
+	msg := &Messages{
 		Received: msgrcv,
 		Sent:     msgsnt,
 	}
-	info := &api.PeerState{
+	info := &ApiPeerState{
 		BgpState:   f.state.String(),
 		AdminState: f.adminState.String(),
 		Messages:   msg,
@@ -485,15 +484,15 @@ func (peer *Peer) ToApiStruct() *api.Peer {
 		Accepted:   accepted,
 		Advertised: advertised,
 	}
-	rr := &api.RouteReflector{
+	rr := &RouteReflector{
 		RouteReflectorClient:    peer.fsm.pConf.RouteReflector.Config.RouteReflectorClient,
 		RouteReflectorClusterId: string(peer.fsm.pConf.RouteReflector.Config.RouteReflectorClusterId),
 	}
-	rs := &api.RouteServer{
+	rs := &RouteServer{
 		RouteServerClient: peer.fsm.pConf.RouteServer.Config.RouteServerClient,
 	}
 
-	return &api.Peer{
+	return &ApiPeer{
 		Conf:           conf,
 		Info:           info,
 		Timers:         apitimer,

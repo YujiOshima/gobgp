@@ -16,7 +16,6 @@
 package server
 
 import (
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/table"
 	"github.com/stretchr/testify/assert"
@@ -34,46 +33,46 @@ func TestModPolicyAssign(t *testing.T) {
 		},
 	})
 	_, err := s.handleGrpcAddPolicy(&GrpcRequest{
-		Data: &api.AddPolicyRequest{
-			Policy: &api.Policy{
+		Data: &AddPolicyRequest{
+			Policy: &Policy{
 				Name: "p1",
 			},
 		},
 	})
 	assert.Nil(err)
 	_, err = s.handleGrpcAddPolicy(&GrpcRequest{
-		Data: &api.AddPolicyRequest{
-			Policy: &api.Policy{
+		Data: &AddPolicyRequest{
+			Policy: &Policy{
 				Name: "p2",
 			},
 		},
 	})
 	assert.Nil(err)
 	_, err = s.handleGrpcAddPolicy(&GrpcRequest{
-		Data: &api.AddPolicyRequest{
-			Policy: &api.Policy{
+		Data: &AddPolicyRequest{
+			Policy: &Policy{
 				Name: "p3",
 			},
 		},
 	})
 	assert.Nil(err)
 	_, err = s.handleGrpcAddPolicyAssignment(&GrpcRequest{
-		Data: &api.AddPolicyAssignmentRequest{
-			Assignment: &api.PolicyAssignment{
-				Type:     api.PolicyType_IMPORT,
-				Resource: api.Resource_GLOBAL,
-				Policies: []*api.Policy{&api.Policy{Name: "p1"}, &api.Policy{Name: "p2"}, &api.Policy{Name: "p3"}},
+		Data: &AddPolicyAssignmentRequest{
+			Assignment: &PolicyAssignment{
+				Type:     PolicyType_IMPORT,
+				Resource: Resource_GLOBAL,
+				Policies: []*Policy{&Policy{Name: "p1"}, &Policy{Name: "p2"}, &Policy{Name: "p3"}},
 			},
 		},
 	})
 	assert.Nil(err)
 
 	_, err = s.handleGrpcDeletePolicyAssignment(&GrpcRequest{
-		Data: &api.DeletePolicyAssignmentRequest{
-			Assignment: &api.PolicyAssignment{
-				Type:     api.PolicyType_IMPORT,
-				Resource: api.Resource_GLOBAL,
-				Policies: []*api.Policy{&api.Policy{Name: "p1"}},
+		Data: &DeletePolicyAssignmentRequest{
+			Assignment: &PolicyAssignment{
+				Type:     PolicyType_IMPORT,
+				Resource: Resource_GLOBAL,
+				Policies: []*Policy{&Policy{Name: "p1"}},
 			},
 		},
 	})

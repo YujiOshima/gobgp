@@ -20,9 +20,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	log "github.com/Sirupsen/logrus"
-	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/config"
 	"github.com/osrg/gobgp/packet/bgp"
+	server "github.com/osrg/gobgp/server"
 	"net"
 	"sort"
 )
@@ -137,10 +137,10 @@ func NewDestination(nlri bgp.AddrPrefixInterface) *Destination {
 	return d
 }
 
-func (dd *Destination) ToApiStruct(id string) *api.Destination {
+func (dd *Destination) ToApiStruct(id string) *server.ApiDestination {
 	prefix := dd.GetNlri().String()
-	paths := func(arg []*Path) []*api.Path {
-		ret := make([]*api.Path, 0, len(arg))
+	paths := func(arg []*Path) []*server.ApiPath {
+		ret := make([]*server.ApiPath, 0, len(arg))
 		first := true
 		for _, p := range arg {
 			if p.Filtered(id) == POLICY_DIRECTION_NONE {
@@ -158,7 +158,7 @@ func (dd *Destination) ToApiStruct(id string) *api.Destination {
 	if len(paths) == 0 {
 		return nil
 	}
-	return &api.Destination{
+	return &server.ApiDestination{
 		Prefix: prefix,
 		Paths:  paths,
 	}
